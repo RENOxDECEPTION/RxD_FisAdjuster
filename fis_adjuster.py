@@ -297,8 +297,10 @@ def read_curve(port, log=print):
 
 
 def probe(port, ask, log=print):
-    """Light one breakpoint at a time (others very light) and ask the user if text shows. Restores the curve after."""
+    """Light one breakpoint at a time (others very light) and ask the user if text shows. Restores the curve after.
+    ask() returns True (visible), False (not visible) or None (cancel)."""
     cl = Cluster(port, log)
+    orig = None
     try:
         cl.login()
         img = cl.read_twice()
@@ -311,7 +313,14 @@ def probe(port, ask, log=print):
             c[i] = strong
             cl.write_row(img, c)
             time.sleep(2)
-            if ask('Point %d of 10 (x=%02X) is lit. Is any text visible on the display now?' % (i + 1, XAXIS[i])):
+            a = ask('Point %d of 10 (x=%02X) is lit. Is any text visible on the display now?' % (i + 1, XAXIS[i]))
+            if a is None:
+                log('cancelled, putting your curve back')
+                cl.write_row(img, orig)
+                if cl.read_all()[0x275:0x27F] != bytes(orig):
+                    raise Fail('could not restore the original curve. Use restore with the backup.')
+                return 'cancelled, original curve restored', []
+            if a:
                 seen.append(i)
             elif seen:
                 break                     # only the one or two points around the current x light up: done
@@ -323,6 +332,12 @@ def probe(port, ask, log=print):
             return 'no point lit the text: display may be off, or the cluster sits outside x %02X-%02X' % (XAXIS[0], XAXIS[-1]), seen
         lo, hi = XAXIS[seen[0]], XAXIS[seen[-1]]
         return ('cluster is at x %02X now' % lo if lo == hi else 'cluster is between x %02X and %02X now' % (lo, hi)), seen
+    except Exception:
+        cl.close()
+        if orig is not None:              # something failed mid-probe: never leave a test pattern in the cluster
+            log('error during probe, putting your curve back')
+            apply_curve(port, orig, log)
+        raise
     finally:
         cl.close()
 
@@ -435,7 +450,7 @@ def gui():
                 logbox.insert('end', v + '\n')
                 logbox.see('end')
             elif k == 'ask':
-                v[1].append(messagebox.askyesno('Probe', v[0]))
+                v[1].append(messagebox.askyesnocancel('Find position', v[0] + '\n\nCancel stops and puts your curve back.'))
                 v[2].set()
             else:
                 for b in btns.winfo_children():
@@ -537,7 +552,7 @@ def main():
         if a.cmd == 'read':
             return
         if a.cmd == 'probe':
-            print(probe(a.port, lambda m: input(m + ' [y/n] ').strip().lower().startswith('y'))[0])
+            print(probe(a.port, lambda m: {'y': True, 'n': False}.get(input(m + ' [y/n/c=cancel] ').strip().lower()[:1]))[0])
             return
         new = (clamp([v - a.n for v in cur]) if a.cmd == 'shift' else
                clamp([int(v, 16) for v in a.curve.split()]) if a.cmd == 'set' else
