@@ -351,7 +351,7 @@ def gui():
     root = tk.Tk()
     root.title('RxD FIS Adjuster')
     q = queue.Queue()
-    state = {'read': None, 'active': []}
+    state = {'read': None, 'active': [], 'busy': False, 'closing': False, 'offered': False}
 
     top = ttk.Frame(root, padding=6)
     top.pack(fill='x')
@@ -432,6 +432,7 @@ def gui():
         q.put(('log', s))
 
     def run(job, done=None):
+        state['busy'] = True
         for b in btns.winfo_children():
             b.state(['disabled'])
 
@@ -449,10 +450,17 @@ def gui():
             if k == 'log':
                 logbox.insert('end', v + '\n')
                 logbox.see('end')
+            elif k == 'ask' and state['closing']:
+                v[1].append(None)                     # window is closing: cancel the probe, curve goes back
+                v[2].set()
             elif k == 'ask':
                 v[1].append(messagebox.askyesnocancel('Find position', v[0] + '\n\nCancel stops and puts your curve back.'))
                 v[2].set()
             else:
+                state['busy'] = False
+                if state['closing']:
+                    root.destroy()
+                    return
                 for b in btns.winfo_children():
                     b.state(['!disabled'])
                 if k == 'err':
@@ -469,10 +477,12 @@ def gui():
                 l.config(text='%02X' % v)
             set_new(r[0])
             log('cluster curve: ' + hx(r[0]))
-            if not state['active'] and messagebox.askyesno('Find position', 'Find which point of the curve the cluster '
+            if not state['offered'] and messagebox.askyesno('Find position', 'Find which point of the curve the cluster '
                                                            'is using right now?\n\nThe display needs text on it. A few test '
                                                            'writes, one yes/no question each, your curve is put back after.'):
+                state['offered'] = True
                 do_probe(confirm=False)
+            state['offered'] = True
         run(lambda: read_curve(port.get(), log), done)
 
     def do_write():
@@ -522,6 +532,12 @@ def gui():
 
     draw()
     log('Read first. Darker/Lighter move the whole curve by 8. Write makes a backup, writes, and verifies.')
+    def on_close():
+        if not state['busy']:
+            return root.destroy()
+        state['closing'] = True                       # never kill a write or probe half way: let it finish / restore
+        log('closing: finishing the current job first (a probe puts your curve back), then the window closes')
+    root.protocol('WM_DELETE_WINDOW', on_close)
     poll()
     root.mainloop()
 
