@@ -113,8 +113,6 @@ The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the ca
 
 **Load backup** puts an old curve into "new"; then **Write** restores it. Only the ten contrast bytes are taken from the file.
 
-**Keep your backup files private.** Each one is the whole cluster EEPROM, which includes your immobilizer login PIN and your mileage. If you share results, share the ten contrast bytes, not the file.
-
 ### Odometer, for swapped clusters
 
 If you fit a replacement cluster, it shows the donor car's mileage. **Read** shows the stored odometer, and **Set odometer** writes the value you type, in miles or km. Set it to the car's true mileage; misstating mileage is illegal in most places.
