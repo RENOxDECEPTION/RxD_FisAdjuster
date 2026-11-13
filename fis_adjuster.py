@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""RxD FIS Adjuster: contrast curve of the B5 Audi VDO cluster centre display (FIS).
+
+GUI:  python fis_adjuster.py
+CLI:  python fis_adjuster.py --port COM3 read
+      python fis_adjuster.py --port COM3 shift 0x10 [--write]      (positive = darker)
+      python fis_adjuster.py --port COM3 set "28 28 28 28 28 28 25 25 18 10" [--write]
+      python fis_adjuster.py --port COM3 restore backups/fis_backup_X.bin [--write]
+      python fis_adjuster.py --port COM3 probe                    (find where on the curve the cluster is now)
+
+Needs: Python 3, pyserial (pip install pyserial), a dumb FTDI KKL K-line cable. Tkinter for the GUI.
+EEPROM 0x26A: 0A, 10 x breakpoints (0x26B-0x274), 10 contrast bytes (0x275-0x27E). Lower byte = darker pixels.
+"""
+import argparse, datetime, os, sys, threading, queue, time
+import serial
+
+FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
+XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
+FLOOR = 0x10            # 0x10 already ghosts at room temperature
+CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips by itself
+BACKUP_DIR = 'backups'
+
+
+class Fail(Exception):
+    pass
+
+
+def hx(b):
+    return ' '.join('%02X' % v for v in b)
+
+
+class Cluster:
+    """KW1281 0x17 -> mode login 'loginas9' -> 19200 8E1 'D1' packets: D1 <len> <cmd> <data> <xor>."""
+
+    def __init__(self, port, log=print):
+        self.port, self.log = port, log
+        self.ser = serial.Serial(port, 10400, timeout=0.005)   # set once: on Windows every timeout change re-sends the port config and glitches bytes still going out
+        self.ser.dtr, self.ser.rts = True, False
+
+    def close(self):
+        try:
+            self.ser.break_condition = False
+            self.ser.close()
+        except Exception:
+            pass
+
+    # -- low level --
+    @staticmethod
+    def wait(ms):   # busy wait: sleep() jitter breaks the 5-baud init on Windows
+        t = time.perf_counter() + ms / 1000
+        while time.perf_counter() < t:
+            pass
+
+    def rd(self, t=0.5):
+        end = time.perf_counter() + t
+        while True:
+            b = self.ser.read(1)
+            if b:
+                return b[0]
+            if time.perf_counter() >= end:
+                return -1
+
+    def put(self, b):   # write one byte, swallow the K-line echo
+        self.ser.write(bytes([b]))
+        self.rd(0.1)
+
+    # -- KW1281 at 10400 8N1 --
+    def init5baud(self):
+        self.ser.reset_input_buffer()
+        self.ser.break_condition = False
+        self.wait(300)
+        bits = [0] + [(0x17 >> i) & 1 for i in range(7)]
+        p = 1
+        for b in bits[1:]:
+            p ^= b
+        for b in bits + [p, 1]:
+            self.ser.break_condition = (b == 0)
+            self.wait(200)
+        self.ser.break_condition = False
+        self.ser.reset_input_buffer()
+        if self.rd(1.5) != 0x55:
+            raise Fail('no answer from the cluster (check cable, ignition, port)')
+        k1, k2 = self.rd(0.2), self.rd(0.2)
+        self.wait(30)
+        self.put(~k2 & 0xFF)
+        if (k1, k2) != (0x01, 0x8A):
+            raise Fail('unexpected keywords %02X %02X' % (k1 & 0xFF, k2 & 0xFF))
+
+    def recv_block(self):
+        n = self.rd(1.5)
+        if n < 0:
+            raise Fail('timeout waiting for block')
+        blk = [n]
+        for _ in range(1, n):
+            self.wait(2)
+            self.put(~blk[-1] & 0xFF)
+            b = self.rd()
+            if b < 0:
+                raise Fail('timeout inside block')
+            blk.append(b)
+        self.wait(2)
+        self.put(~blk[-1] & 0xFF)
+        if self.rd() != 0x03:
+            raise Fail('bad block end')
+        self.cnt = blk[1]
+        return blk
+
+    def send_block(self, title, data=()):
+        self.cnt = (self.cnt + 1) & 0xFF
+        self.wait(25)
+        for b in [3 + len(data), self.cnt, title] + list(data):
+            self.put(b)
+            if self.rd() != (~b & 0xFF):
+                raise Fail('no complement from cluster')
+        self.put(0x03)
+
+    def login(self):
+        for t in range(3):
+            try:
+                return self._login()
+            except Fail as e:
+                if t == 2:
+                    raise
+                self.log('login retry (%s)' % e)
+                self.ser.baudrate, self.ser.parity = 10400, serial.PARITY_NONE
+                time.sleep(2.5)            # the cluster drops back to KW1281 after about a second of silence
+
+    def _login(self):
+        self.ser.baudrate, self.ser.parity = 10400, serial.PARITY_NONE
+        self.cnt = 0
+        for t in range(3):
+            try:
+                self.init5baud()
+                break
+            except Fail:
+                if t == 2:
+                    raise
+        ident = []
+        while True:
+            b = self.recv_block()
+            if b[2] == 0x09:
+                break
+            ident.append(bytes(b[3:]).decode('latin1'))
+            self.send_block(0x09)
+        name = ' '.join(s.strip() for s in ident[:3])
+        if not ident or not ident[0].startswith('8D0920') or 'VDO' not in ''.join(ident[1:3]):
+            raise Fail('not a B5 VDO cluster: %r' % name)
+        self.ident = name
+        self.send_block(0x00)              # ident again, then answer the 4th block with the mode login
+        for _ in range(3):
+            self.recv_block()
+            self.send_block(0x09)
+        self.recv_block()
+        self.send_block(0x1B, [0x80] + list(b'loginas9'))
+        if self.recv_block()[2] != 0x09:
+            raise Fail('mode login refused')
+        self.wait(1600)
+        self.ser.baudrate, self.ser.parity = 19200, serial.PARITY_EVEN
+        self.ser.reset_input_buffer()
+        ver = self.d1([0x49])[4]
+        pw = 'w10serie' if ver == 0x56 else 'w10kombi' if 0x57 <= ver <= 0x59 else '19xDR8xS' if ver >= 0x70 else 'vdokombi'
+        if self.d1([0x53, 0x9D] + list(pw.encode()))[2] != 0x06:
+            raise Fail('password refused')
+        self.d1([0x53, 0x96, 0x04])
+        self.log('connected: ' + name)
+
+    # -- D1 at 19200 8E1 --
+    def d1(self, body, tries=8):
+        pkt = [0xD1, len(body) + 3] + list(body)
+        x = 0
+        for b in pkt:
+            x ^= b
+        pkt.append(x)
+        seen = []
+        for t in range(1, tries + 1):
+            self.wait(5)
+            self.ser.reset_input_buffer()
+            self.ser.write(bytes(pkt))
+            echo = [self.rd(0.2) for _ in pkt]
+            h, n = (self.rd(0.3), self.rd(0.1)) if echo == pkt else (-1, -1)
+            if h == 0xD1 and n >= 3:
+                r = [h, n] + [self.rd(0.1) for _ in range(n - 2)]
+                x = 0
+                for b in r[:-1]:
+                    x ^= b
+                if -1 not in r and x == r[-1]:
+                    return r
+            seen.append('echo %s reply %02X %02X' % (hx([e & 0xFF for e in echo]), h & 0xFF, n & 0xFF))
+            while self.rd(0.15) >= 0:      # let the line go quiet before retrying (the cluster may still be talking)
+                pass
+        raise Fail('no reply to D1 %s (%s)' % (hx(body), '; '.join(seen[:3])))
+
+    def read_all(self):
+        img = bytearray()
+        for a in range(0, 2048, 16):
+            try:
+                r = self.d1([0x72, 0x10, a >> 8, a & 0xFF])
+            except Fail:                   # session lost: log in again and carry on from here
+                self.log('connection hiccup at %03X, reconnecting' % a)
+                time.sleep(2)
+                self.login()
+                r = self.d1([0x72, 0x10, a >> 8, a & 0xFF])
+            if r[2] != 0x72 or len(r) != 20:
+                raise Fail('bad read reply at %03X' % a)
+            img += bytes(r[3:19])
+        return img
+
+    def read_twice(self):
+        a, b = self.read_all(), self.read_all()
+        bad = [i for i in range(2048) if a[i] != b[i] and i not in CLUSTER_MANAGED]
+        if bad:
+            raise Fail('two reads differ at %03X: bad connection' % bad[0])
+        return a
+
+    def write_row(self, img, curve):
+        row = list(img[0x270:0x280])
+        row[5:15] = curve
+        for attempt in (1, 2):
+            try:
+                r = self.d1([0x77, 0x10, 0x02, 0x70] + row, tries=1)
+                if r[2] == 0x06:
+                    break
+            except Fail:
+                pass
+            # no ACK: never resend blind. Look at what the row holds now.
+            now = list(self.d1([0x72, 0x10, 0x02, 0x70])[3:19])
+            if now == row:
+                break                                   # it was written, only the ACK got lost
+            if now != list(img[0x270:0x280]) or attempt == 2:
+                raise Fail('write not acknowledged and row 0x270 is now %s. Read again / restore.' % hx(now))
+            self.log('write not acknowledged, row unchanged, trying once more')
+        self.d1([0x53, 0x82])          # display picks up the new curve; the cluster drops the session
+        self.ser.close()
+        time.sleep(4)
+        self.ser.open()
+        for t in range(3):
+            try:
+                self.login()
+                return
+            except Fail:
+                if t == 2:
+                    raise Fail('written, but could not log in again to verify. Read it back.')
+                time.sleep(3)
+
+
+def check_layout(img):
+    if list(img[0x26A:0x275]) != [0x0A] + XAXIS:
+        raise Fail('EEPROM 0x26A is %s, not the known layout. Unknown cluster, nothing written.' % hx(img[0x26A:0x275]))
+    return list(img[0x275:0x27F])
+
+
+def backup(img):
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    p = os.path.join(BACKUP_DIR, 'fis_backup_%s.bin' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
+    with open(p, 'wb') as f:
+        f.write(img)
+    return p
+
+
+def clamp(c):
+    return [min(0xFF, max(FLOOR, v)) for v in c]
+
+
+def apply_curve(port, curve, log=print):
+    """Full guarded write: read twice, back up, check layout, write row, re-login, verify. Returns backup path."""
+    cl = Cluster(port, log)
+    try:
+        cl.login()
+        img = cl.read_twice()
+        bak = backup(img)
+        log('backup: ' + bak)
+        check_layout(img)
+        curve = clamp(curve)
+        log('writing ' + hx(curve))
+        cl.write_row(img, curve)
+        after = cl.read_all()
+        want = bytearray(img)
+        want[0x275:0x27F] = bytes(curve)
+        bad = [i for i in range(2048) if after[i] != want[i] and i not in CLUSTER_MANAGED]
+        if bad:
+            raise Fail('VERIFY FAILED at %s. Restore from %s' % (' '.join('%03X' % i for i in bad), bak))
+        log('written and verified')
+        return bak
+    finally:
+        cl.close()
+
+
+def read_curve(port, log=print):
+    cl = Cluster(port, log)
+    try:
+        cl.login()
+        img = cl.read_twice()
+        log('backup: ' + backup(img))
+        return check_layout(img), cl.ident
+    finally:
+        cl.close()
+
+
+def probe(port, ask, log=print):
+    """Light one breakpoint at a time (others very light) and ask the user if text shows. Restores the curve after."""
+    cl = Cluster(port, log)
+    try:
+        cl.login()
+        img = cl.read_twice()
+        log('backup: ' + backup(img))
+        orig = check_layout(img)
+        strong = max(FLOOR, min(min(orig[:6]) - 0x30, 0x20))
+        seen = []
+        for i in range(10):
+            c = [0x7F] * 10
+            c[i] = strong
+            cl.write_row(img, c)
+            time.sleep(2)
+            if ask('Point %d of 10 (x=%02X) is lit. Is any text visible on the display now?' % (i + 1, XAXIS[i])):
+                seen.append(i)
+            elif seen:
+                break                     # only the one or two points around the current x light up: done
+        cl.write_row(img, orig)
+        if cl.read_all()[0x275:0x27F] != bytes(orig):
+            raise Fail('could not restore the original curve. Use restore with the backup.')
+        log('original curve restored')
+        if not seen:
+            return 'no point lit the text: display may be off, or the cluster sits outside x %02X-%02X' % (XAXIS[0], XAXIS[-1]), seen
+        lo, hi = XAXIS[seen[0]], XAXIS[seen[-1]]
+        return ('cluster is at x %02X now' % lo if lo == hi else 'cluster is between x %02X and %02X now' % (lo, hi)), seen
+    finally:
+        cl.close()
+
+
+# ---------------- GUI ----------------
+def gui():
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+    from serial.tools import list_ports
+
+    root = tk.Tk()
+    root.title('RxD FIS Adjuster')
+    q = queue.Queue()
+    state = {'read': None, 'active': []}
+
+    top = ttk.Frame(root, padding=6)
+    top.pack(fill='x')
+    ttk.Label(top, text='Port').pack(side='left')
+    ports = [p.device for p in list_ports.comports()]
+    port = ttk.Combobox(top, values=ports, width=14)
+    port.set(ports[0] if ports else '')
+    port.pack(side='left', padx=4)
+
+    grid = ttk.Frame(root, padding=6)
+    grid.pack()
+    ttk.Label(grid, text='x').grid(row=0, column=0, sticky='e')
+    ttk.Label(grid, text='factory').grid(row=1, column=0, sticky='e')
+    ttk.Label(grid, text='cluster').grid(row=2, column=0, sticky='e')
+    ttk.Label(grid, text='new').grid(row=3, column=0, sticky='e')
+    cur_lbl, ent, x_lbl = [], [], []
+    for i in range(10):
+        xl = tk.Label(grid, text='%02X' % XAXIS[i])
+        xl.grid(row=0, column=i + 1)
+        x_lbl.append(xl)
+        ttk.Label(grid, text='%02X' % FACTORY[i], foreground='gray').grid(row=1, column=i + 1)
+        l = ttk.Label(grid, text='--')
+        l.grid(row=2, column=i + 1)
+        cur_lbl.append(l)
+        e = ttk.Entry(grid, width=4, justify='center')
+        e.insert(0, '%02X' % FACTORY[i])
+        e.grid(row=3, column=i + 1, padx=1)
+        e.bind('<KeyRelease>', lambda _e: draw())
+        ent.append(e)
+
+    W, H, M = 560, 240, 30
+    cv = tk.Canvas(root, width=W, height=H, bg='white')
+    cv.pack(padx=6)
+
+    def new_curve():
+        try:
+            return [int(e.get(), 16) for e in ent]
+        except ValueError:
+            return None
+
+    def set_new(c):
+        for e, v in zip(ent, clamp(c)):
+            e.delete(0, 'end')
+            e.insert(0, '%02X' % v)
+        draw()
+
+    def draw():
+        cv.delete('all')
+        px = lambda x: M + x * (W - 2 * M) / 255
+        py = lambda y: M + y * (H - 2 * M) / 0x80          # 0 at top = darker, 0x80 at bottom = lighter
+        cv.create_rectangle(px(0), py(0), px(255), py(FLOOR), fill='#fde', outline='')
+        a = state['active']
+        if a:                                                 # where the cluster is on the curve right now (from Find position)
+            x0, x1 = px(XAXIS[a[0]]) - 4, px(XAXIS[a[-1]]) + 4
+            cv.create_rectangle(x0, py(0), x1, py(0x80), fill='#dfd', outline='green')
+            cv.create_text((x0 + x1) / 2, py(0x80) + 8, text='active now', fill='green')
+        for i, xl in enumerate(x_lbl):
+            xl.config(fg='green' if i in a else 'black', font=('TkDefaultFont', 9, 'bold' if i in a else 'normal'))
+        cv.create_text(px(255) - 4, py(0) + 8, text='darker', anchor='e', fill='gray')
+        cv.create_text(px(255) - 4, py(0x80) - 8, text='lighter', anchor='e', fill='gray')
+        cv.create_text(px(128), H - 8, text='x (probably display temperature; higher = colder, unproven)', fill='gray')
+        for y in range(0, 0x81, 0x20):
+            cv.create_text(M - 4, py(y), text='%02X' % y, anchor='e', fill='gray')
+        for c, col in ((FACTORY, 'gray'), (state['read'], 'blue'), (new_curve(), 'red')):
+            if c:
+                pts = [v for i in range(10) for v in (px(XAXIS[i]), py(c[i]))]
+                cv.create_line(*pts, fill=col, width=2)
+                for i in range(10):
+                    cv.create_oval(px(XAXIS[i]) - 3, py(c[i]) - 3, px(XAXIS[i]) + 3, py(c[i]) + 3, outline=col)
+        cv.create_text(M, 10, text='gray = factory   blue = in cluster   red = new', anchor='w')
+
+    btns = ttk.Frame(root, padding=6)
+    btns.pack()
+    logbox = tk.Text(root, height=8, width=80)
+    logbox.pack(padx=6, pady=(0, 6))
+
+    def log(s):
+        q.put(('log', s))
+
+    def run(job, done=None):
+        for b in btns.winfo_children():
+            b.state(['disabled'])
+
+        def worker():
+            try:
+                r = job()
+                q.put(('done', (done, r)))
+            except Exception as ex:
+                q.put(('err', str(ex)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll():
+        while not q.empty():
+            k, v = q.get()
+            if k == 'log':
+                logbox.insert('end', v + '\n')
+                logbox.see('end')
+            elif k == 'ask':
+                v[1].append(messagebox.askyesno('Probe', v[0]))
+                v[2].set()
+            else:
+                for b in btns.winfo_children():
+                    b.state(['!disabled'])
+                if k == 'err':
+                    logbox.insert('end', 'ERROR: ' + v + '\n')
+                    messagebox.showerror('FIS Adjuster', v)
+                elif v[0]:
+                    v[0](v[1])
+        root.after(100, poll)
+
+    def do_read():
+        def done(r):
+            state['read'] = r[0]
+            for l, v in zip(cur_lbl, r[0]):
+                l.config(text='%02X' % v)
+            set_new(r[0])
+            log('cluster curve: ' + hx(r[0]))
+            if not state['active'] and messagebox.askyesno('Find position', 'Find which point of the curve the cluster '
+                                                           'is using right now?\n\nThe display needs text on it. A few test '
+                                                           'writes, one yes/no question each, your curve is put back after.'):
+                do_probe(confirm=False)
+        run(lambda: read_curve(port.get(), log), done)
+
+    def do_write():
+        c = new_curve()
+        if c is None:
+            return messagebox.showerror('FIS Adjuster', 'new curve: 10 hex bytes please')
+        if not messagebox.askyesno('Write', 'Write this curve to the cluster?\n\n' + hx(clamp(c)) + '\n\nA backup is made first.'):
+            return
+        run(lambda: apply_curve(port.get(), c, log), lambda _r: do_read())
+
+    def do_restore():
+        f = filedialog.askopenfilename(initialdir=BACKUP_DIR, filetypes=[('backup', '*.bin')])
+        if f:
+            img = open(f, 'rb').read()
+            if len(img) != 2048:
+                return messagebox.showerror('FIS Adjuster', 'not a 2048-byte backup')
+            set_new(list(img[0x275:0x27F]))
+            log('loaded curve from backup into "new": press Write to apply')
+
+    def do_probe(confirm=True):
+        if confirm and not messagebox.askyesno('Find position', 'This lights one curve point at a time and asks you each '
+                                               'time whether text shows on the display. The display needs some text on it. '
+                                               'Your curve is restored at the end. Go?'):
+            return
+
+        def ask(msg):
+            ans, ev = [], threading.Event()
+            q.put(('ask', (msg, ans, ev)))
+            ev.wait()
+            return ans[0]
+        def done(r):
+            state['active'] = r[1]
+            draw()
+            log(r[0])
+            messagebox.showinfo('Find position', r[0])
+        run(lambda: probe(port.get(), ask, log), done)
+
+    def shift(n):
+        c = new_curve()
+        if c:
+            set_new([v - n for v in c])
+
+    for text, cmd in (('Read', do_read), ('Darker', lambda: shift(8)), ('Lighter', lambda: shift(-8)),
+                      ('Factory', lambda: set_new(FACTORY)), ('Load backup', do_restore),
+                      ('Write', do_write), ('Find position', do_probe)):
+        ttk.Button(btns, text=text, command=cmd).pack(side='left', padx=2)
+
+    draw()
+    log('Read first. Darker/Lighter move the whole curve by 8. Write makes a backup, writes, and verifies.')
+    poll()
+    root.mainloop()
+
+
+# ---------------- CLI ----------------
+def main():
+    if len(sys.argv) == 1:
+        return gui()
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--port', required=True)
+    common.add_argument('--write', action='store_true', help='actually write (otherwise dry run)')
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    sub.add_parser('read', parents=[common])
+    sub.add_parser('probe', parents=[common])
+    s = sub.add_parser('shift', parents=[common])
+    s.add_argument('n', type=lambda v: int(v, 0), help='positive = darker, e.g. 0x10')
+    s = sub.add_parser('set', parents=[common])
+    s.add_argument('curve', help='10 hex bytes')
+    s = sub.add_parser('restore', parents=[common])
+    s.add_argument('file')
+    a = ap.parse_args()
+    try:
+        cur, name = read_curve(a.port)
+        print('cluster     :', name)
+        print('x           :', hx(XAXIS))
+        print('curve now   :', hx(cur), '  (factory', hx(FACTORY) + ', lower = darker)')
+        if a.cmd == 'read':
+            return
+        if a.cmd == 'probe':
+            print(probe(a.port, lambda m: input(m + ' [y/n] ').strip().lower().startswith('y'))[0])
+            return
+        new = (clamp([v - a.n for v in cur]) if a.cmd == 'shift' else
+               clamp([int(v, 16) for v in a.curve.split()]) if a.cmd == 'set' else
+               list(open(a.file, 'rb').read()[0x275:0x27F]))
+        if len(new) != 10:
+            raise Fail('need 10 values')
+        print('curve new   :', hx(new))
+        if not a.write:
+            print('dry run: add --write to apply')
+            return
+        apply_curve(a.port, new)
+    except Fail as e:
+        sys.exit('ERROR: %s' % e)
+
+
+if __name__ == '__main__':
+    main()

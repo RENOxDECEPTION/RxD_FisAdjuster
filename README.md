@@ -49,44 +49,54 @@ The tool shifts the whole curve by the same amount, so the cluster's own tempera
 
 ## What you need
 
-- A B5 VDO cluster, part number 8D0 920 9xx, ident "B5-KOMBIINSTR. VDO". The script checks both and refuses anything else.
-- A "dumb" FTDI-based KKL / VAG-COM 409.1 K-line cable. Note its COM port number in Device Manager.
-- Windows with PowerShell 7 (`pwsh`).
+- A B5 VDO cluster, part number 8D0 920 9xx, ident "B5-KOMBIINSTR. VDO". The app checks both and refuses anything else.
+- A "dumb" FTDI-based KKL / VAG-COM 409.1 K-line cable.
+- Python 3 with `pip install pyserial`. The GUI uses tkinter, which ships with Python on Windows. On Linux install `python3-tk`.
 - Ignition on. On the bench, the cluster needs +12 V on blue pins 23 and 1, ground on blue 7, 9 and 24, and the K-line on green 28.
 
-## Usage
+## The app
 
-```
-# 1. Read only: makes a backup and shows the current curve
-pwsh fis_contrast.ps1 -Port COM3
+![app](images/gui.png)
 
-# 2. Preview a change (no write without -Write)
-pwsh fis_contrast.ps1 -Port COM3 -Shift 0x10
-
-# 3. Apply it
-pwsh fis_contrast.ps1 -Port COM3 -Shift 0x10 -Write
-
-# Undo: write back the curve from any backup the script made
-pwsh fis_contrast.ps1 -Port COM3 -Restore fis_backup_YYYYMMDD_HHMMSS.bin -Write
-```
+Run `python fis_adjuster.py` with no arguments for the window. It shows:
+- **The table:** the x breakpoints, the factory curve, the curve in your cluster, and the new curve you are editing.
+- **The graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app will not write below.
+- **Active now (green):** the point the cluster is using right now. After **Read**, the app offers to find it (**Find position**).
+  - It lights one point at a time and asks whether text shows on the display, so the display must have some text on it.
+  - It usually takes 3-4 test writes.
+  - Your curve is put back afterwards.
+  - The cluster cannot simply report this: the display's temperature sensor is not visible over the diagnostic line.
 
 **Steps to follow:**
-1. Start with `-Shift 0x10`.
-2. Look at the display. It updates a few seconds after the write; no ignition cycle is needed.
-3. If it is still too faint, run again with another `-Shift 0x08`.
-4. If you see a faint grid or ghost pixels, go back with `-Shift -0x08`.
+1. **Read.**
+2. Press **Darker** once or twice: each press moves the whole curve 8 steps.
+3. **Write.** The display updates a few seconds after the write; no ignition cycle is needed.
+4. Repeat until the text is clean. If you see a faint grid or ghost pixels, press **Lighter** and write again.
 
-The test cluster needed a total shift of 0x30 (factory 0x50 to 0x20).
+The test cluster needed 0x30 in total (factory 0x50 to 0x20).
 
-**Every run does all of this:**
-- Reads the whole EEPROM twice and saves `fis_backup_<date>.bin` before changing anything. Keep that file.
+**Every write does all of this:**
+- Reads the whole EEPROM twice and saves `backups/fis_backup_<date>.bin` before changing anything. Keep those files.
 - Refuses to write unless the curve's x axis matches the known layout exactly.
 - Writes one 16-byte row (0x270-0x27F) and changes only the ten contrast bytes.
-- Logs in again after the write and verifies the whole EEPROM.
+- Logs in again and verifies the whole EEPROM.
+
+**Load backup** puts an old curve into "new"; then **Write** restores it.
+
+### Command line
+
+```
+python fis_adjuster.py read    --port COM3                    # Linux: --port /dev/ttyUSB0
+python fis_adjuster.py shift 0x10 --port COM3                 # preview, positive = darker
+python fis_adjuster.py shift 0x10 --port COM3 --write
+python fis_adjuster.py set "28 28 28 28 28 28 25 25 18 10" --port COM3 --write
+python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write
+python fis_adjuster.py probe   --port COM3                    # find the active point (asks y/n)
+```
 
 ## Notes
 
-- **Tested on one cluster so far:** an 8D0 920 980 C, "B5-KOMBIINSTR. VDO D11", on the bench. The same curve appears at the same address in D12 and D13 dumps, but those have not been adjusted yet. In-car use through the OBD port is not tested yet. Reports are welcome.
+- **Tested on one cluster so far:** an 8D0 920 980 C, "B5-KOMBIINSTR. VDO D11", on the bench, from Windows. Linux should work through pyserial but has not been tried. The same curve appears at the same address in D12 and D13 dumps, but those have not been adjusted yet. In-car use through the OBD port is not tested yet. Reports are welcome.
 - **The cluster counts EEPROM writes** in byte 0x294. Each write adds one.
 - **Protocol:** KW1281 at address 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`. The commands used are:
   - `72` read 16 EEPROM bytes

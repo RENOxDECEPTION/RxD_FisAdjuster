@@ -1,1 +1,3 @@
 fis_backup_*.bin
+backups/
+__pycache__/
