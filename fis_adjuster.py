@@ -8,10 +8,12 @@ CLI:  python fis_adjuster.py --port COM3 read
       python fis_adjuster.py --port COM3 restore backups/fis_backup_X.bin [--write]
       python fis_adjuster.py --port COM3 probe                    (find where on the curve the cluster is now)
 
+x is the display temperature sensor (hotter = lower x, measured). The C figures the app shows are guesses.
+
 Needs: Python 3, pyserial (pip install pyserial), a dumb FTDI KKL K-line cable. Tkinter for the GUI.
 EEPROM 0x26A: 0A, 10 x breakpoints (0x26B-0x274), 10 contrast bytes (0x275-0x27E). Lower byte = darker pixels.
 """
-import argparse, datetime, os, sys, threading, queue, time
+import argparse, datetime, math, os, sys, threading, queue, time
 import serial
 
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
@@ -19,6 +21,36 @@ XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
 CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips by itself
 BACKUP_DIR = 'backups'
+
+# x is the reading of the display's temperature sensor. Measured: hotter = lower x, colder = higher x.
+# The C figures are GUESSES, not a calibration: an NTC divider with B = 3500 K is assumed, pinned to one in-car
+# reading (x 0x79 with the cabin taken as 15 C). Expect +-5 C near room temperature and worse at the ends.
+GUESS_B, GUESS_X, GUESS_C = 3500.0, 0x79, 15.0
+
+
+def x_to_c(x):
+    r = (x / (255.0 - x)) / (GUESS_X / (255.0 - GUESS_X))
+    return 1 / (1 / (GUESS_C + 273.15) + math.log(r) / GUESS_B) - 273.15
+
+
+def c_to_x(t):
+    r = GUESS_X / (255.0 - GUESS_X) * math.exp(GUESS_B * (1 / (t + 273.15) - 1 / (GUESS_C + 273.15)))
+    return 255 * r / (1 + r)
+
+
+def active_for(t):
+    """Indices of the curve points the cluster interpolates between at display temperature t (C). A guess, see above."""
+    x = c_to_x(t)
+    if x <= XAXIS[0]:
+        return [0]
+    if x >= XAXIS[-1]:
+        return [9]
+    i = max(k for k in range(10) if XAXIS[k] <= x)
+    return [i, i + 1]
+
+
+assert abs(x_to_c(GUESS_X) - GUESS_C) < 1e-6 and abs(c_to_x(x_to_c(0xA5)) - 0xA5) < 1e-6 and active_for(20) == [1, 2] and active_for(-40) == [9]
+GUESS_ROW = ' '.join('%+3.0f' % x_to_c(x) for x in XAXIS)
 
 
 class Fail(Exception):
@@ -146,6 +178,18 @@ class Cluster:
         if not ident or not ident[0].startswith('8D0920') or 'VDO' not in ''.join(ident[1:3]):
             raise Fail('not a B5 VDO cluster: %r' % name)
         self.ident = name
+        self.outside = None                # outside temperature from measuring block 2, field 4 (cars only; None if not plausible)
+        if not getattr(self, 'no_blocks', False):
+            try:
+                self.send_block(0x29, [2])
+                b = self.recv_block()
+            except Fail:
+                self.no_blocks = True      # this cluster does not like it: the login retry skips it
+                raise
+            if b[2] == 0xE7 and len(b) >= 15 and b[12] == 0x05:
+                t = b[13] * (b[14] - 100) * 0.1
+                if -40 <= t <= 60:
+                    self.outside = t
         self.send_block(0x00)              # ident again, then answer the 4th block with the mode login
         for _ in range(3):
             self.recv_block()
@@ -291,7 +335,7 @@ def read_curve(port, log=print):
         cl.login()
         img = cl.read_twice()
         log('backup: ' + backup(img))
-        return check_layout(img), cl.ident
+        return check_layout(img), cl.ident, cl.outside
     finally:
         cl.close()
 
@@ -351,7 +395,7 @@ def gui():
     root = tk.Tk()
     root.title('RxD FIS Adjuster')
     q = queue.Queue()
-    state = {'read': None, 'active': [], 'busy': False, 'closing': False, 'offered': False}
+    state = {'read': None, 'active': [], 'exact': False, 'busy': False, 'closing': False}
 
     top = ttk.Frame(root, padding=6)
     top.pack(fill='x')
@@ -360,25 +404,32 @@ def gui():
     port = ttk.Combobox(top, values=ports, width=14)
     port.set(ports[0] if ports else '')
     port.pack(side='left', padx=4)
+    ttk.Label(top, text='   Display temperature, C (guess):').pack(side='left')
+    temp = ttk.Entry(top, width=5, justify='center')
+    temp.pack(side='left', padx=4)
+    temp_note = ttk.Label(top, text='type it to mark the active points', foreground='gray')
+    temp_note.pack(side='left')
 
     grid = ttk.Frame(root, padding=6)
     grid.pack()
     ttk.Label(grid, text='x').grid(row=0, column=0, sticky='e')
-    ttk.Label(grid, text='factory').grid(row=1, column=0, sticky='e')
-    ttk.Label(grid, text='cluster').grid(row=2, column=0, sticky='e')
-    ttk.Label(grid, text='new').grid(row=3, column=0, sticky='e')
+    ttk.Label(grid, text='about C (guess)', foreground='gray').grid(row=1, column=0, sticky='e')
+    ttk.Label(grid, text='factory').grid(row=2, column=0, sticky='e')
+    ttk.Label(grid, text='cluster').grid(row=3, column=0, sticky='e')
+    ttk.Label(grid, text='new').grid(row=4, column=0, sticky='e')
     cur_lbl, ent, x_lbl = [], [], []
     for i in range(10):
         xl = tk.Label(grid, text='%02X' % XAXIS[i])
         xl.grid(row=0, column=i + 1)
         x_lbl.append(xl)
-        ttk.Label(grid, text='%02X' % FACTORY[i], foreground='gray').grid(row=1, column=i + 1)
+        ttk.Label(grid, text='%+.0f' % x_to_c(XAXIS[i]), foreground='gray').grid(row=1, column=i + 1)
+        ttk.Label(grid, text='%02X' % FACTORY[i], foreground='gray').grid(row=2, column=i + 1)
         l = ttk.Label(grid, text='--')
-        l.grid(row=2, column=i + 1)
+        l.grid(row=3, column=i + 1)
         cur_lbl.append(l)
         e = ttk.Entry(grid, width=4, justify='center')
         e.insert(0, '%02X' % FACTORY[i])
-        e.grid(row=3, column=i + 1, padx=1)
+        e.grid(row=4, column=i + 1, padx=1)
         e.bind('<KeyRelease>', lambda _e: draw())
         ent.append(e)
 
@@ -404,15 +455,15 @@ def gui():
         py = lambda y: M + y * (H - 2 * M) / 0x80          # 0 at top = darker, 0x80 at bottom = lighter
         cv.create_rectangle(px(0), py(0), px(255), py(FLOOR), fill='#fde', outline='')
         a = state['active']
-        if a:                                                 # where the cluster is on the curve right now (from Find position)
+        if a:                                                 # where the cluster is on the curve: exact (Find position) or a guess from the temperature
             x0, x1 = px(XAXIS[a[0]]) - 4, px(XAXIS[a[-1]]) + 4
             cv.create_rectangle(x0, py(0), x1, py(0x80), fill='#dfd', outline='green')
-            cv.create_text((x0 + x1) / 2, py(0x80) + 8, text='active now', fill='green')
+            cv.create_text((x0 + x1) / 2, py(0x80) + 8, text='active now' if state['exact'] else 'active (guess)', fill='green')
         for i, xl in enumerate(x_lbl):
             xl.config(fg='green' if i in a else 'black', font=('TkDefaultFont', 9, 'bold' if i in a else 'normal'))
         cv.create_text(px(255) - 4, py(0) + 8, text='darker', anchor='e', fill='gray')
         cv.create_text(px(255) - 4, py(0x80) - 8, text='lighter', anchor='e', fill='gray')
-        cv.create_text(px(128), H - 8, text='x (probably display temperature; higher = colder, unproven)', fill='gray')
+        cv.create_text(px(128), H - 8, text='x = display temperature sensor:   hot  <--   -->  cold', fill='gray')
         for y in range(0, 0x81, 0x20):
             cv.create_text(M - 4, py(y), text='%02X' % y, anchor='e', fill='gray')
         for c, col in ((FACTORY, 'gray'), (state['read'], 'blue'), (new_curve(), 'red')):
@@ -470,6 +521,15 @@ def gui():
                     v[0](v[1])
         root.after(100, poll)
 
+    def mark_temp(_e=None):
+        try:
+            t = float(temp.get())
+        except ValueError:
+            return
+        state['active'], state['exact'] = active_for(t), False
+        draw()
+    temp.bind('<KeyRelease>', mark_temp)
+
     def do_read():
         def done(r):
             state['read'] = r[0]
@@ -477,12 +537,12 @@ def gui():
                 l.config(text='%02X' % v)
             set_new(r[0])
             log('cluster curve: ' + hx(r[0]))
-            if not state['offered'] and messagebox.askyesno('Find position', 'Find which point of the curve the cluster '
-                                                           'is using right now?\n\nThe display needs text on it. A few test '
-                                                           'writes, one yes/no question each, your curve is put back after.'):
-                state['offered'] = True
-                do_probe(confirm=False)
-            state['offered'] = True
+            if r[2] is not None:
+                log('outside temperature from the car: %.0f C. The display is at that temperature only after the car has sat for hours.' % r[2])
+                temp_note.config(text='outside sensor: %.0f C' % r[2])
+                if not temp.get().strip():
+                    temp.insert(0, '%.0f' % r[2])
+                    mark_temp()
         run(lambda: read_curve(port.get(), log), done)
 
     def do_write():
@@ -514,7 +574,7 @@ def gui():
             ev.wait()
             return ans[0]
         def done(r):
-            state['active'] = r[1]
+            state['active'], state['exact'] = r[1], bool(r[1])
             draw()
             log(r[0])
             messagebox.showinfo('Find position', r[0])
@@ -532,6 +592,7 @@ def gui():
 
     draw()
     log('Read first. Darker/Lighter move the whole curve by 8. Write makes a backup, writes, and verifies.')
+    log('The C row and the green "active (guess)" band are estimates, not measurements. Find position gives the exact points (3-4 test writes).')
     def on_close():
         if not state['busy']:
             return root.destroy()
@@ -561,9 +622,14 @@ def main():
     s.add_argument('file')
     a = ap.parse_args()
     try:
-        cur, name = read_curve(a.port)
+        cur, name, outside = read_curve(a.port)
         print('cluster     :', name)
-        print('x           :', hx(XAXIS))
+        print('x           :', hx(XAXIS), '  (display temperature sensor: left = hot, right = cold)')
+        print('about C     :', GUESS_ROW, '  (GUESS, not calibrated)')
+        if outside is not None:
+            act = active_for(outside)
+            print('outside temp: %.0f C from the car. If the car has sat for hours, the active points are about x %s (guess)'
+                  % (outside, ' and '.join('%02X' % XAXIS[i] for i in act)))
         print('curve now   :', hx(cur), '  (factory', hx(FACTORY) + ', lower = darker)')
         if a.cmd == 'read':
             return
