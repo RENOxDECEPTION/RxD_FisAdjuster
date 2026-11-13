@@ -12,13 +12,15 @@ A second cluster, in a car, through the OBD port. At the factory value (0x50) it
 
 ## What it fixes, and what it does not
 
-**Fixes:** a FIS that is evenly faint, washed out or completely blank, while the backlight is on.
+**Fixes:**
+- A FIS that is evenly faint, washed out or completely blank, while the backlight is on.
+- Letters or parts of letters that are missing because the display is right at the edge of fading. The car in the photo above looked like it had a ribbon fault; it was contrast.
 
 **Does not fix:**
-- Missing lines or columns of pixels.
-- Pixels that drop out when the cluster warms up.
+- Whole lines or columns of pixels that stay dead whatever contrast you set.
+- Pixels that drop out when the cluster warms up and come back when you press on the display.
 
-Those come from the heat-sealed ribbon between the glass and the board, or from the driver chip on it. They need a hardware repair.
+Those come from the heat-sealed ribbon between the glass and the board, or from the driver chip on it. They need a hardware repair. If you are not sure which you have, try this first: it costs nothing and the backup puts you back to stock.
 
 ## How it works
 
@@ -41,7 +43,7 @@ The temperatures below are **guesses, not a calibration**. They assume an ordina
 | about C (guess) | +65 | +42 | +15 | -1 | -8 | -11 | -14 | -16 | -19 | -21 |
 | factory | 50 | 50 | 50 | 50 | 50 | 50 | 4D | 4D | 40 | 1F |
 
-In practice: at any normal cabin temperature the cluster sits between the 2nd and 4th points, on the flat part of the factory curve. Exact readings so far: 0x79 in a car on a 10 C day, and 0x5C falling to 0x50 on a bench cluster being warmed.
+In practice: at any normal cabin temperature the cluster sits between the 2nd and 4th points, on the flat part of the factory curve. Exact readings so far: 0x79 in a car on a 10 C day, and 0x5C falling to 0x4B on a bench cluster warmed to about 36 C (the guess predicts 0x48 there).
 
 ![sweep](images/contrast_sweep.gif)
 
