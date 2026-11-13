@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RxD FIS Adjuster: contrast curve of the B5 Audi VDO cluster centre display (FIS).
+"""RxD FIS Adjuster: contrast curve of the B5 Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
 
 GUI:  python fis_adjuster.py
 CLI:  python fis_adjuster.py --port COM3 read
@@ -7,13 +7,14 @@ CLI:  python fis_adjuster.py --port COM3 read
       python fis_adjuster.py --port COM3 set "28 28 28 28 28 28 25 25 18 10" [--write]
       python fis_adjuster.py --port COM3 restore backups/fis_backup_X.bin [--write]
       python fis_adjuster.py --port COM3 probe                    (find where on the curve the cluster is now)
+      python fis_adjuster.py --port COM3 odometer 201370 --miles [--write]   (swapped cluster: set the true mileage)
 
 x is the display temperature sensor (hotter = lower x, measured). The C figures the app shows are guesses.
 
 Needs: Python 3, pyserial (pip install pyserial), a dumb FTDI KKL K-line cable. Tkinter for the GUI.
 EEPROM 0x26A: 0A, 10 x breakpoints (0x26B-0x274), 10 contrast bytes (0x275-0x27E). Lower byte = darker pixels.
 """
-import argparse, datetime, math, os, sys, threading, queue, time
+import argparse, datetime, math, os, struct, sys, threading, queue, time
 import serial
 
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
@@ -51,6 +52,29 @@ def active_for(t):
 
 assert abs(x_to_c(GUESS_X) - GUESS_C) < 1e-6 and abs(c_to_x(x_to_c(0xA5)) - 0xA5) < 1e-6 and active_for(20) == [1, 2] and active_for(-40) == [9]
 GUESS_ROW = ' '.join('%+3.0f' % x_to_c(x) for x in XAXIS)
+
+# Odometer: a ring of 8 little-endian words at 0x042. Each word is the inverse of a counter in 16 km units, and the
+# number of words one step ahead adds 2 km each. Stored value = shown km + ODO_OFS.
+# ODO_OFS is measured, not exact: on a D11 the dash rolled over 2-3 km below the +50 that older tools use, so the dash
+# can land a mile or two from what you typed. Check the dash after a write and set it again if needed.
+ODO, ODO_OFS, KM_PER_MI = 0x42, 52, 1.609344
+
+
+def ring_km(img):
+    c = [~w & 0xFFFF for w in struct.unpack('<8H', bytes(img[ODO:ODO + 16]))]
+    lo = min(c)
+    n = sum(1 for v in c if v == lo + 1)
+    if c != [lo + (i < n) for i in range(8)]:
+        raise Fail('odometer ring is not a valid pattern: ' + hx(img[ODO:ODO + 16]))
+    return 16 * lo + 2 * n - ODO_OFS
+
+
+def ring_bytes(km):
+    v = km + ODO_OFS
+    return list(struct.pack('<8H', *[~((v >> 4) + (i < ((v & 15) >> 1))) & 0xFFFF for i in range(8)]))
+
+
+assert all(ring_km([0] * ODO + ring_bytes(k)) in (k, k - 1) for k in (0, 1, 17, 160950, 324075, 999999))
 
 
 class Fail(Exception):
@@ -256,24 +280,24 @@ class Cluster:
             raise Fail('two reads differ at %03X: bad connection' % bad[0])
         return a
 
-    def write_row(self, img, curve):
-        row = list(img[0x270:0x280])
-        row[5:15] = curve
+    def write16(self, adr, old, new):
+        """Write 16 EEPROM bytes at adr. Never resends blind: if the ACK is lost, look at what is there now."""
+        cmd = [adr >> 8, adr & 0xFF]
         for attempt in (1, 2):
             try:
-                r = self.d1([0x77, 0x10, 0x02, 0x70] + row, tries=1)
-                if r[2] == 0x06:
-                    break
+                if self.d1([0x77, 0x10] + cmd + list(new), tries=1)[2] == 0x06:
+                    return
             except Fail:
                 pass
-            # no ACK: never resend blind. Look at what the row holds now.
-            now = list(self.d1([0x72, 0x10, 0x02, 0x70])[3:19])
-            if now == row:
-                break                                   # it was written, only the ACK got lost
-            if now != list(img[0x270:0x280]) or attempt == 2:
-                raise Fail('write not acknowledged and row 0x270 is now %s. Read again / restore.' % hx(now))
-            self.log('write not acknowledged, row unchanged, trying once more')
-        self.d1([0x53, 0x82])          # display picks up the new curve; the cluster drops the session
+            now = list(self.d1([0x72, 0x10] + cmd)[3:19])
+            if now == list(new):
+                return                                  # it was written, only the ACK got lost
+            if now != list(old) or attempt == 2:
+                raise Fail('write not acknowledged and %03X is now %s. Read again / restore.' % (adr, hx(now)))
+            self.log('write not acknowledged, bytes unchanged, trying once more')
+
+    def restart(self):
+        self.d1([0x53, 0x82])          # the cluster takes up the new values and drops the session
         self.ser.close()
         time.sleep(4)
         self.ser.open()
@@ -285,6 +309,12 @@ class Cluster:
                 if t == 2:
                     raise Fail('written, but could not log in again to verify. Read it back.')
                 time.sleep(3)
+
+    def write_row(self, img, curve):
+        row = list(img[0x270:0x280])
+        row[5:15] = curve
+        self.write16(0x270, list(img[0x270:0x280]), row)
+        self.restart()
 
 
 def check_layout(img):
@@ -335,7 +365,38 @@ def read_curve(port, log=print):
         cl.login()
         img = cl.read_twice()
         log('backup: ' + backup(img))
-        return check_layout(img), cl.ident, cl.outside
+        try:
+            km = ring_km(img)
+        except Fail:
+            km = None
+        return check_layout(img), cl.ident, cl.outside, km
+    finally:
+        cl.close()
+
+
+def set_odometer(port, km, log=print):
+    """For swapped clusters: set the odometer to the car's true mileage. Read twice, back up, write the ring, verify."""
+    if not 0 <= km <= 999999:
+        raise Fail('odometer out of range')
+    cl = Cluster(port, log)
+    try:
+        cl.login()
+        img = cl.read_twice()
+        bak = backup(img)
+        log('backup: ' + bak)
+        old = ring_km(img)                       # refuses a ring it does not understand
+        new = ring_bytes(km)
+        log('odometer %d km -> %d km' % (old, km))
+        cl.write16(ODO, img[ODO:ODO + 16], new)
+        cl.restart()
+        after = cl.read_all()
+        want = bytearray(img)
+        want[ODO:ODO + 16] = bytes(new)
+        bad = [i for i in range(2048) if after[i] != want[i] and i not in CLUSTER_MANAGED]
+        if bad:
+            raise Fail('VERIFY FAILED at %s. Backup: %s' % (' '.join('%03X' % i for i in bad), bak))
+        log('odometer written and verified. Check the dash: it can land a mile or two off, set it again if so.')
+        return bak
     finally:
         cl.close()
 
@@ -395,7 +456,7 @@ def gui():
     root = tk.Tk()
     root.title('RxD FIS Adjuster')
     q = queue.Queue()
-    state = {'read': None, 'active': [], 'exact': False, 'busy': False, 'closing': False}
+    state = {'read': None, 'active': [], 'exact': False, 'busy': False, 'closing': False, 'km': None, 'outside': None, 'us': True}
 
     top = ttk.Frame(root, padding=6)
     top.pack(fill='x')
@@ -404,7 +465,11 @@ def gui():
     port = ttk.Combobox(top, values=ports, width=14)
     port.set(ports[0] if ports else '')
     port.pack(side='left', padx=4)
-    ttk.Label(top, text='   Display temperature, C (guess):').pack(side='left')
+    units = ttk.Combobox(top, values=['F, miles', 'C, km'], width=8, state='readonly')
+    units.set('F, miles')
+    units.pack(side='left', padx=4)
+    temp_lbl = ttk.Label(top)
+    temp_lbl.pack(side='left')
     temp = ttk.Entry(top, width=5, justify='center')
     temp.pack(side='left', padx=4)
     temp_note = ttk.Label(top, text='type it to mark the active points', foreground='gray')
@@ -413,16 +478,19 @@ def gui():
     grid = ttk.Frame(root, padding=6)
     grid.pack()
     ttk.Label(grid, text='x').grid(row=0, column=0, sticky='e')
-    ttk.Label(grid, text='about C (guess)', foreground='gray').grid(row=1, column=0, sticky='e')
+    c_name = ttk.Label(grid, foreground='gray')
+    c_name.grid(row=1, column=0, sticky='e')
     ttk.Label(grid, text='factory').grid(row=2, column=0, sticky='e')
     ttk.Label(grid, text='cluster').grid(row=3, column=0, sticky='e')
     ttk.Label(grid, text='new').grid(row=4, column=0, sticky='e')
-    cur_lbl, ent, x_lbl = [], [], []
+    cur_lbl, ent, x_lbl, c_lbl = [], [], [], []
     for i in range(10):
         xl = tk.Label(grid, text='%02X' % XAXIS[i])
         xl.grid(row=0, column=i + 1)
         x_lbl.append(xl)
-        ttk.Label(grid, text='%+.0f' % x_to_c(XAXIS[i]), foreground='gray').grid(row=1, column=i + 1)
+        cl_ = ttk.Label(grid, foreground='gray')
+        cl_.grid(row=1, column=i + 1)
+        c_lbl.append(cl_)
         ttk.Label(grid, text='%02X' % FACTORY[i], foreground='gray').grid(row=2, column=i + 1)
         l = ttk.Label(grid, text='--')
         l.grid(row=3, column=i + 1)
@@ -476,6 +544,47 @@ def gui():
 
     btns = ttk.Frame(root, padding=6)
     btns.pack()
+    odo = ttk.Frame(root, padding=(6, 0, 6, 6))
+    odo.pack()
+    odo_lbl = ttk.Label(odo, text='Odometer: read first')
+    odo_lbl.pack(side='left')
+    ttk.Label(odo, text='    set to').pack(side='left')
+    odo_ent = ttk.Entry(odo, width=9, justify='center')
+    odo_ent.pack(side='left', padx=4)
+    odo_unit = ttk.Label(odo)
+    odo_unit.pack(side='left')
+
+    def all_btns():
+        return [b for f_ in (btns, odo) for b in f_.winfo_children() if isinstance(b, ttk.Button)]
+
+    def show(c):                                  # temperature in the chosen unit
+        return c * 1.8 + 32 if state['us'] else c
+
+    def odo_text(km):
+        return '%d mi' % round(km / KM_PER_MI) if state['us'] else '%d km' % km
+
+    def refresh_units(_e=None):
+        was = state['us']
+        state['us'] = units.get().startswith('F')
+        u = 'F' if state['us'] else 'C'
+        temp_lbl.config(text='  Display temperature, %s (guess):' % u)
+        c_name.config(text='about %s (guess)' % u)
+        for i, l in enumerate(c_lbl):
+            l.config(text='%+.0f' % show(x_to_c(XAXIS[i])))
+        odo_unit.config(text='miles' if state['us'] else 'km')
+        odo_lbl.config(text='Odometer: ' + (odo_text(state['km']) if state['km'] is not None else 'read first'))
+        if was != state['us']:                    # convert what is typed in the boxes
+            for e, f_ in ((temp, lambda v: v * 1.8 + 32 if state['us'] else (v - 32) / 1.8),
+                          (odo_ent, lambda v: v / KM_PER_MI if state['us'] else v * KM_PER_MI)):
+                try:
+                    v = float(e.get().replace(',', ''))
+                except ValueError:
+                    continue
+                e.delete(0, 'end')
+                e.insert(0, '%.0f' % f_(v))
+        if state['outside'] is not None:
+            temp_note.config(text='outside sensor: %.0f %s' % (show(state['outside']), u))
+    units.bind('<<ComboboxSelected>>', refresh_units)
     logbox = tk.Text(root, height=8, width=80)
     logbox.pack(padx=6, pady=(0, 6))
 
@@ -484,7 +593,7 @@ def gui():
 
     def run(job, done=None):
         state['busy'] = True
-        for b in btns.winfo_children():
+        for b in all_btns():
             b.state(['disabled'])
 
         def worker():
@@ -512,7 +621,7 @@ def gui():
                 if state['closing']:
                     root.destroy()
                     return
-                for b in btns.winfo_children():
+                for b in all_btns():
                     b.state(['!disabled'])
                 if k == 'err':
                     logbox.insert('end', 'ERROR: ' + v + '\n')
@@ -526,7 +635,7 @@ def gui():
             t = float(temp.get())
         except ValueError:
             return
-        state['active'], state['exact'] = active_for(t), False
+        state['active'], state['exact'] = active_for((t - 32) / 1.8 if state['us'] else t), False
         draw()
     temp.bind('<KeyRelease>', mark_temp)
 
@@ -537,11 +646,14 @@ def gui():
                 l.config(text='%02X' % v)
             set_new(r[0])
             log('cluster curve: ' + hx(r[0]))
+            state['outside'], state['km'] = r[2], r[3]
+            refresh_units()
+            if r[3] is not None:
+                log('odometer: %d km = %d mi (stored value; the dash can read a mile or two different)' % (r[3], round(r[3] / KM_PER_MI)))
             if r[2] is not None:
-                log('outside temperature from the car: %.0f C. The display is at that temperature only after the car has sat for hours.' % r[2])
-                temp_note.config(text='outside sensor: %.0f C' % r[2])
+                log('outside temperature from the car: %.0f C / %.0f F. The display is at that temperature only after the car has sat for hours.' % (r[2], r[2] * 1.8 + 32))
                 if not temp.get().strip():
-                    temp.insert(0, '%.0f' % r[2])
+                    temp.insert(0, '%.0f' % show(r[2]))
                     mark_temp()
         run(lambda: read_curve(port.get(), log), done)
 
@@ -580,6 +692,21 @@ def gui():
             messagebox.showinfo('Find position', r[0])
         run(lambda: probe(port.get(), ask, log), done)
 
+    def do_odo():
+        try:
+            v = float(odo_ent.get().replace(',', ''))
+        except ValueError:
+            return messagebox.showerror('Odometer', 'type the mileage to set first')
+        km = round(v * KM_PER_MI) if state['us'] else round(v)
+        if state['km'] is None:
+            return messagebox.showerror('Odometer', 'Read first')
+        if not messagebox.askyesno('Set odometer', 'Set the odometer to %d mi (%d km)?\n\nThe app reads %s in the cluster now. If that '
+                                   'is not what the dash shows (within a mile or two), stop: this cluster stores it differently.\n\n'
+                                   'This is for a swapped cluster: set it to the car\'s true mileage. A backup is made first.'
+                                   % (round(km / KM_PER_MI), km, odo_text(state['km']))):
+            return
+        run(lambda: set_odometer(port.get(), km, log), lambda _r: do_read())
+
     def shift(n):
         c = new_curve()
         if c:
@@ -589,6 +716,8 @@ def gui():
                       ('Factory', lambda: set_new(FACTORY)), ('Load backup', do_restore),
                       ('Write', do_write), ('Find position', do_probe)):
         ttk.Button(btns, text=text, command=cmd).pack(side='left', padx=2)
+    ttk.Button(odo, text='Set odometer', command=do_odo).pack(side='left', padx=6)
+    refresh_units()
 
     draw()
     log('Read first. Darker/Lighter move the whole curve by 8. Write makes a backup, writes, and verifies.')
@@ -620,9 +749,12 @@ def main():
     s.add_argument('curve', help='10 hex bytes')
     s = sub.add_parser('restore', parents=[common])
     s.add_argument('file')
+    s = sub.add_parser('odometer', parents=[common])
+    s.add_argument('value', type=int, help='mileage to set, in km (or miles with --miles)')
+    s.add_argument('--miles', action='store_true')
     a = ap.parse_args()
     try:
-        cur, name, outside = read_curve(a.port)
+        cur, name, outside, km = read_curve(a.port)
         print('cluster     :', name)
         print('x           :', hx(XAXIS), '  (display temperature sensor: left = hot, right = cold)')
         print('about C     :', GUESS_ROW, '  (GUESS, not calibrated)')
@@ -631,7 +763,17 @@ def main():
             print('outside temp: %.0f C from the car. If the car has sat for hours, the active points are about x %s (guess)'
                   % (outside, ' and '.join('%02X' % XAXIS[i] for i in act)))
         print('curve now   :', hx(cur), '  (factory', hx(FACTORY) + ', lower = darker)')
+        if km is not None:
+            print('odometer    : %d km = %d mi  (stored value; the dash can read a mile or two different)' % (km, round(km / KM_PER_MI)))
         if a.cmd == 'read':
+            return
+        if a.cmd == 'odometer':
+            new_km = round(a.value * KM_PER_MI) if a.miles else a.value
+            print('odometer new: %d km = %d mi' % (new_km, round(new_km / KM_PER_MI)))
+            if not a.write:
+                print('dry run: add --write to apply')
+                return
+            set_odometer(a.port, new_km)
             return
         if a.cmd == 'probe':
             print(probe(a.port, lambda m: {'y': True, 'n': False}.get(input(m + ' [y/n/c=cancel] ').strip().lower()[:1]))[0])

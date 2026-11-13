@@ -90,7 +90,8 @@ The tool shifts the whole curve by the same amount, so the cluster's own tempera
 Run `python fis_adjuster.py` with no arguments for the window. It shows:
 - **The table:** the x breakpoints, the factory curve, the curve in your cluster, and the new curve you are editing.
 - **The graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app will not write below.
-- **About C (guess):** the guessed temperature of each point (see above).
+- **Units:** the box next to the port switches between F / miles and C / km.
+- **About F or C (guess):** the guessed temperature of each point (see above).
 - **Active (green band):** the points the cluster is using right now. There are two ways to get it:
   - **A guess, no writes.** Type the display's temperature in C into the box at the top. In a car, **Read** fills it in from the car's outside temperature sensor. That is only right after the car has sat for hours; once the cabin warms up, type your own number. The band is labelled "active (guess)".
   - **Exact, 3-4 test writes: Find position.** It lights one point at a time and asks whether text shows, so the display must have some text on it. Your curve is put back afterwards, and Cancel stops it at any question.
@@ -110,7 +111,18 @@ The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the ca
 - Writes one 16-byte row (0x270-0x27F) and changes only the ten contrast bytes.
 - Logs in again and verifies the whole EEPROM.
 
-**Load backup** puts an old curve into "new"; then **Write** restores it.
+**Load backup** puts an old curve into "new"; then **Write** restores it. Only the ten contrast bytes are taken from the file.
+
+**Keep your backup files private.** Each one is the whole cluster EEPROM, which includes your immobilizer login PIN and your mileage. If you share results, share the ten contrast bytes, not the file.
+
+### Odometer, for swapped clusters
+
+If you fit a replacement cluster, it shows the donor car's mileage. **Read** shows the stored odometer, and **Set odometer** writes the value you type, in miles or km. Set it to the car's true mileage; misstating mileage is illegal in most places.
+
+- It makes the same backup first, writes only the 16 odometer bytes (0x042-0x051), and verifies the whole EEPROM afterwards.
+- Check first that the value the app reads matches your dash to within a mile or two. If it does not, your cluster stores it differently: do not write.
+- The dash can land a mile or two from what you typed. The stored value has 2 km steps, and the offset between it and the dash was measured on one cluster. Look at the dash afterwards and set it again if needed.
+- Tested on the bench D11 only.
 
 ### Command line
 
@@ -121,6 +133,7 @@ python fis_adjuster.py shift 0x10 --port COM3 --write
 python fis_adjuster.py set "28 28 28 28 28 28 25 25 18 10" --port COM3 --write
 python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write
 python fis_adjuster.py probe   --port COM3                    # find the active point (asks y/n)
+python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped cluster: set the true mileage (km without --miles)
 ```
 
 ## Notes
@@ -130,7 +143,8 @@ python fis_adjuster.py probe   --port COM3                    # find the active 
   - 8D0 920 980 CX, "VDO D13", in a car through the OBD port. Its factory curve is `50 50 50 50 50 50 4E 4E 40 1F`; the app's "factory" row shows the D11 values, so use your own backup to go back to stock.
   - Linux should work through pyserial but has not been tried. The same table appears at the same address in D12 dumps, not adjusted yet. Reports are welcome.
 - **The temperature figures are guesses.** Only the direction is measured. If you can read your cluster at a known cold or hot temperature, please report x and the temperature.
-- **The cluster counts EEPROM writes** in byte 0x294. Each write adds one.
+- **The cluster counts EEPROM writes** in byte 0x294. Each write adds one, odometer writes included.
+- **Odometer storage:** 8 little-endian words at 0x042, each the inverse of a counter in 16 km units; the number of words one step ahead adds 2 km each. Stored value = shown km + 52 (measured; other tools use + 50).
 - **Protocol:** KW1281 at address 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`. The commands used are:
   - `72` read 16 EEPROM bytes
   - `77` write 16 EEPROM bytes
