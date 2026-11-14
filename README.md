@@ -90,8 +90,11 @@ The tool shifts the whole curve by the same amount, so the cluster's own tempera
 Run `python fis_adjuster.py` with no arguments for the window. It shows:
 - **The table:** the x breakpoints, the factory curve, the curve in your cluster, and the new curve you are editing.
 - **The graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app will not write below.
+- **Tabs:** Display (contrast and backlight), Odometer and Clock are kept apart.
 - **Units:** the box next to the port switches between F / miles and C / km.
+- **Cancel:** stops a Read or Write that is still trying to connect, for when you picked the wrong port. Once the cluster has answered, the job always runs to the end so nothing is left half written.
 - **About F or C (guess):** the guessed temperature of each point (see above).
+- **Backlight:** two sliders, see below.
 - **Active (green band):** the points the cluster is using right now. There are two ways to get it:
   - **A guess, no writes.** Type the display's temperature in C into the box at the top. In a car, **Read** fills it in from the car's outside temperature sensor. That is only right after the car has sat for hours; once the cabin warms up, type your own number. The band is labelled "active (guess)".
   - **Exact, 3-4 test writes: Find position.** It lights one point at a time and asks whether text shows, so the display must have some text on it. Your curve is put back afterwards, and Cancel stops it at any question.
@@ -100,7 +103,7 @@ Run `python fis_adjuster.py` with no arguments for the window. It shows:
 **Steps to follow:**
 1. **Read.**
 2. Press **Darker** once or twice: each press moves the whole curve 8 steps.
-3. **Write.** The display updates a few seconds after the write; no ignition cycle is needed.
+3. **Write contrast + backlight.** The display updates a few seconds after the write; no ignition cycle is needed.
 4. Repeat until the text is clean. If you see a faint grid or ghost pixels, press **Lighter** and write again.
 
 The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the car needed 0x14 (0x50 to 0x3C).
@@ -108,14 +111,38 @@ The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the ca
 **Every write does all of this:**
 - Reads the whole EEPROM twice and saves `backups/fis_backup_<date>.bin` before changing anything. Keep those files.
 - Refuses to write unless the curve's x axis matches the known layout exactly.
-- Writes one 16-byte row (0x270-0x27F) and changes only the ten contrast bytes.
-- Logs in again and verifies the whole EEPROM.
+- Writes only the 16-byte rows that changed: 0x270 for contrast (only the ten contrast bytes change), plus 0x200 and 0x210 if you moved a backlight slider.
+- Restarts the display, logs in again and verifies the whole EEPROM.
+- Puts the clock back. The display restart resets the cluster's clock to 12:00 on the bench cluster, so the app reads the time before the restart and writes it back afterwards.
 
-**Load backup** puts an old curve into "new"; then **Write** restores it. Only the ten contrast bytes are taken from the file.
+**Load backup** puts the contrast curve and the backlight values from an old backup into "new"; then **Write** restores them. Nothing else is taken from the file.
+
+### Backlight (experimental)
+
+![backlight sweep](images/backlight_sweep.gif)
+
+The EEPROM also holds the backlight brightness tables, in the same count / x / y format as the contrast table. Higher = brighter.
+
+| Table at | Factory values | Lights |
+|---|---|---|
+| 0x205 | `0F 29 93 FF FF` | FIS, top section |
+| 0x210 | `0F 29 93 FF FF` | FIS, lower section |
+| 0x1FE | `0F 29 FF` | clock and odometer displays |
+
+- The app has one slider for the FIS (both sections together) and one for the clock and odometer. The middle of the slider is what is in the cluster now; **Factory** puts the factory values back. The same Write button applies it.
+- **This is tested on one bench cluster only (D11), not in a car yet.** The GIF shows all three tables set flat from 0x00 to 0xFF on that cluster.
+- The factory tables already end at FF. Moving the slider up lifts the dim and middle part of the curve; if your car already runs at the top of it, you will see no change.
+- The app refuses to write these tables unless their layout matches the known one.
+
+### Clock
+
+The **Clock** tab sets the cluster's time and date from the PC. It writes the running clock in the cluster's memory, not the EEPROM, so there is no backup step. After a battery disconnect the cluster always starts at 12:00, 1.01.1999: that default is fixed in its firmware and cannot be changed.
+
+Tested on the bench D11 only. The app first checks that the bytes it is about to write hold a valid, ticking date; on a cluster version that keeps its clock elsewhere it does nothing and says so.
 
 ### Odometer, for swapped clusters
 
-If you fit a replacement cluster, it shows the donor car's mileage. **Read** shows the stored odometer, and **Set odometer** writes the value you type, in miles or km. Set it to the car's true mileage; misstating mileage is illegal in most places.
+If you fit a replacement cluster, it shows the donor car's mileage. On the **Odometer** tab, **Read** shows the stored odometer, and **Set odometer** writes the value you type, in miles or km. Set it to the car's true mileage; misstating mileage is illegal in most places.
 
 - It makes the same backup first, writes only the 16 odometer bytes (0x042-0x051), and verifies the whole EEPROM afterwards.
 - Check first that the value the app reads matches your dash to within a mile or two. If it does not, your cluster stores it differently: do not write.
@@ -132,6 +159,8 @@ python fis_adjuster.py set "28 28 28 28 28 28 25 25 18 10" --port COM3 --write
 python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write
 python fis_adjuster.py probe   --port COM3                    # find the active point (asks y/n)
 python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped cluster: set the true mileage (km without --miles)
+python fis_adjuster.py backlight fis 0x10 --port COM3 --write        # experimental: fis or clock, positive = brighter
+python fis_adjuster.py clock --port COM3 --write                     # set the cluster clock to the PC's time
 ```
 
 ## Notes
@@ -140,6 +169,7 @@ python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped c
   - 8D0 920 980 C, "VDO D11", on the bench.
   - 8D0 920 980 CX, "VDO D13", in a car through the OBD port. Its factory curve is `50 50 50 50 50 50 4E 4E 40 1F`; the app's "factory" row shows the D11 values, so use your own backup to go back to stock.
   - Linux should work through pyserial but has not been tried. The same table appears at the same address in D12 dumps, not adjusted yet. Reports are welcome.
+- **Backlight and clock are tested on the bench D11 only**, not on the D13 and not in a car.
 - **The temperature figures are guesses.** Only the direction is measured. If you can read your cluster at a known cold or hot temperature, please report x and the temperature.
 - **The cluster counts EEPROM writes** in byte 0x294. Each write adds one, odometer writes included.
 - **Odometer storage:** 8 little-endian words at 0x042, each the inverse of a counter in 16 km units; the number of words one step ahead adds 2 km each. Stored value = shown km + 52 (measured; other tools use + 50).
@@ -149,7 +179,7 @@ python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped c
   - `53 9D <password>` log in
   - `53 82` restart the display after a write
 
-  The firmware also accepts `52`/`57` (read/write CPU memory), which is how this was found.
+  The firmware also accepts `52`/`57` (read/write CPU memory), which is how this was found. The clock is set with `57`: on the D11 the running time is at RAM 0x0213 (year, month, day, hour, minute, second).
 - **Bench tip:** if you switch the cluster's 12 V with the cable plugged in, some KKL cables lock up their USB driver until they are replugged.
 
 Use at your own risk. Keep your backup file.
