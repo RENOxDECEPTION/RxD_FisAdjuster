@@ -2,14 +2,14 @@
 """RxD FIS Adjuster: contrast curve of the B5 Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
 
 GUI:  python fis_adjuster.py
-CLI:  python fis_adjuster.py --port COM3 read
-      python fis_adjuster.py --port COM3 shift 0x10 [--write]      (positive = darker)
-      python fis_adjuster.py --port COM3 set "28 28 28 28 28 28 25 25 18 10" [--write]
-      python fis_adjuster.py --port COM3 restore backups/fis_backup_X.bin [--write]
-      python fis_adjuster.py --port COM3 probe                    (find where on the curve the cluster is now)
-      python fis_adjuster.py --port COM3 odometer 201370 --miles [--write]   (swapped cluster: set the true mileage)
-      python fis_adjuster.py --port COM3 backlight fis 0x10 [--write]        (EXPERIMENTAL; fis or clock, positive = brighter)
-      python fis_adjuster.py --port COM3 clock --write                       (set the cluster clock to this PC's time)
+CLI:  python fis_adjuster.py read --port COM3
+      python fis_adjuster.py shift --port COM3 0x10 [--write]      (positive = darker)
+      python fis_adjuster.py set --port COM3 "28 28 28 28 28 28 25 25 18 10" [--write]
+      python fis_adjuster.py restore --port COM3 backups/fis_backup_X.bin [--write]
+      python fis_adjuster.py probe --port COM3                    (find where on the curve the cluster is now)
+      python fis_adjuster.py odometer --port COM3 201370 --miles [--write]   (swapped cluster: set the true mileage)
+      python fis_adjuster.py backlight --port COM3 fis 0x10 [--write]        (EXPERIMENTAL; fis or clock, positive = brighter)
+      python fis_adjuster.py clock --port COM3 --write                       (set the cluster clock to this PC's time)
 
 x is the display temperature sensor (hotter = lower x, measured). The C figures the app shows are guesses.
 
@@ -244,6 +244,7 @@ class Cluster:
             raise Fail('password refused')
         self.d1([0x53, 0x96, 0x04])
         self.connected = True              # from here on Cancel is ignored: a job is never dropped half way
+        CANCEL.clear()                     # a late press must not cancel a later reconnect or a safety restore
         self.log('connected: ' + name)
 
     # -- D1 at 19200 8E1 --
@@ -313,23 +314,31 @@ class Cluster:
     CLOCK = 0x0213      # CPU RAM: year, month, day, hour, minute, second (binary; bit 7 of each is a flag). From the D11 firmware.
 
     def read_clock(self):
-        """(datetime, flag bits) of the cluster's running clock, or None if those bytes are not a clock on this firmware."""
+        """(datetime, flag bits) of the cluster's running clock, or None if those bytes are not a clock on this firmware.
+        Never raises: a cluster that does not answer is remembered as 'no clock' and not asked again."""
         def rd():
-            b = self.d1([0x52, 0x06, 0x00, self.CLOCK >> 8, self.CLOCK & 0xFF])[3:9]
-            v = [x & 0x7F for x in b]
+            r = self.d1([0x52, 0x06, 0x00, self.CLOCK >> 8, self.CLOCK & 0xFF], tries=2)
+            if len(r) != 10 or r[2] != 0x52:
+                return None
+            v = [x & 0x7F for x in r[3:9]]
             try:
-                return (datetime.datetime((1900 if v[0] >= 97 else 2000) + v[0], *v[1:]), [x & 0x80 for x in b]) if v[0] <= 99 else None
+                return (datetime.datetime((1900 if v[0] >= 97 else 2000) + v[0], *v[1:]), [x & 0x80 for x in r[3:9]]) if v[0] <= 99 else None
             except ValueError:
                 return None
+        if getattr(self, 'clock_ok', None) is False:
+            return None
         try:
             a = rd()
-            if a and not getattr(self, 'clock_ok', False):      # prove once that it ticks before ever writing there
+            if a and not getattr(self, 'clock_ok', None):       # prove once that it ticks before ever writing there
                 time.sleep(1.5)
                 b = rd()
                 self.clock_ok = bool(b) and 1 <= (b[0] - a[0]).total_seconds() <= 3
                 a = b
-            return a if getattr(self, 'clock_ok', False) else None
-        except Fail:
+            if not a:
+                self.clock_ok = False
+            return a if self.clock_ok else None
+        except Exception:
+            self.clock_ok = False
             return None
 
     def set_clock(self, t):
@@ -355,13 +364,13 @@ class Cluster:
                     raise Fail('written, but could not log in again to verify. Read it back.')
                 time.sleep(3)
         try:                           # the restart can reset the clock to 12:00: put the cluster's own time back
-            now = self.read_clock()
+            now = self.read_clock() if before else None
             if before and now:
                 want = before[0] + datetime.timedelta(seconds=time.time() - t0)
                 if abs((now[0] - want).total_seconds()) > 90:
                     self.set_clock(want)
                     self.log('the restart reset the clock: put back to %s' % want.strftime('%H:%M'))
-        except Fail:
+        except Exception:              # the clock is a convenience: it must never get in the way of the verify
             self.log('could not put the clock back: set it by hand')
 
     def write_row(self, img, curve):
@@ -1010,10 +1019,13 @@ def main():
         if len(new) != 10:
             raise Fail('need 10 values')
         print('curve new   :', hx(new))
+        new_bl = bl_read(open(a.file, 'rb').read()) if a.cmd == 'restore' and bl else None      # restore brings the backlight back too
+        if new_bl:
+            print('backlight new: FIS %s, clock+odometer %s' % (bl_text(new_bl, 'fis'), bl_text(new_bl, 'clock')))
         if not a.write:
             print('dry run: add --write to apply')
             return
-        apply_curve(a.port, new)
+        apply_curve(a.port, new, bl=new_bl)
     except Fail as e:
         sys.exit('ERROR: %s' % e)
 

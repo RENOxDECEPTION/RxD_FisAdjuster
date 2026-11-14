@@ -156,7 +156,7 @@ python fis_adjuster.py read    --port COM3                    # Linux: --port /d
 python fis_adjuster.py shift 0x10 --port COM3                 # preview, positive = darker
 python fis_adjuster.py shift 0x10 --port COM3 --write
 python fis_adjuster.py set "28 28 28 28 28 28 25 25 18 10" --port COM3 --write
-python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write
+python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write   # contrast and backlight from a backup
 python fis_adjuster.py probe   --port COM3                    # find the active point (asks y/n)
 python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped cluster: set the true mileage (km without --miles)
 python fis_adjuster.py backlight fis 0x10 --port COM3 --write        # experimental: fis or clock, positive = brighter
