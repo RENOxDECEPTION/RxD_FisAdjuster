@@ -85,7 +85,7 @@ The tool shifts the whole curve by the same amount, so the cluster's own tempera
 
 ## The app
 
-![app](images/gui.png)
+![app](images/app.png)
 
 Run `python fis_adjuster.py` with no arguments for the window. It shows:
 - **The table:** the x breakpoints, the factory curve, the curve in your cluster, and the new curve you are editing.
