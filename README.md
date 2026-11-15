@@ -1,6 +1,6 @@
 # RxD FIS Adjuster
 
-Fix a faded or blank centre display (FIS) on a B5 Audi VDO cluster by raising its contrast, through the OBD port with a cheap K-line cable. No soldering, no new LCD. C5 A6/allroad clusters: experimental, see [What you need](#what-you-need).
+Fix a faded or blank centre display (FIS) on a B5 Audi VDO cluster by raising its contrast, through the OBD port with a cheap K-line cable. No soldering, no new LCD. C5 A6/allroad and A3 8L clusters: experimental, see [What you need](#what-you-need).
 
 ![factory vs adjusted](images/before_after.jpg)
 
@@ -47,12 +47,12 @@ Contact sheets: [bench](images/sweep_sheet.jpg), [car](images/car_sweep.jpg).
 
 ## What you need
 
-- A B5 VDO cluster (8D0 920 9xx, ident "B5-KOMBIINSTR. VDO"), or a C5 A6/allroad VDO cluster (4B0 920 9xx or 4Z7 920 9xx, ident "C5-KOMBIINSTR. VDO"). The app refuses anything else, including early 4B0 920 900 and later "KOMBI+WEGFAHRS" units.
+- A B5 VDO cluster (8D0 920 9xx, ident "B5-KOMBIINSTR. VDO"), a C5 A6/allroad VDO cluster (4B0 920 9xx or 4Z7 920 9xx, ident "C5-KOMBIINSTR. VDO"), or an A3 8L VDO cluster (8L0 920 9xx, ident "AB-KOMBIINSTR. VDO"). The app refuses anything else, including early 4B0 920 900 and later "KOMBI+WEGFAHRS" units.
 - An FTDI-based KKL / VAG-COM 409.1 K-line cable.
 - Python 3 with `pip install pyserial` (tkinter ships with Python on Windows; on Linux install `python3-tk`).
 - Ignition on. On a bench: +12 V on blue 23 and 1, ground on blue 7, 9 and 24, K-line on green 28.
 
-> **C5 support is EXPERIMENTAL.** Every C5 read and write is untested, on the bench and in a car: no C5 cluster has been connected to this tool yet. It is based only on 13 C5 EEPROM dumps that match the B5 layout byte for byte. **If you try it on a C5, please [open an issue](https://github.com/RENOxDECEPTION/RxD_FisAdjuster/issues) whether it worked or failed**, with your part number and ident.
+> **C5 and A3 support is EXPERIMENTAL.** Every C5 and A3 read and write is untested, on the bench and in a car: no C5 or A3 cluster has been connected to this tool yet. It is based only on EEPROM dumps (13 C5, 25 A3) that match the B5 layout byte for byte. **If you try it on a C5 or A3, please [open an issue](https://github.com/RENOxDECEPTION/RxD_FisAdjuster/issues) whether it worked or failed**, with your part number and ident.
 
 ## Using the app
 
@@ -133,6 +133,10 @@ python fis_adjuster.py clock --port COM3 --write
 Use at your own risk. Keep your backup file.
 
 ## Changes
+
+**1.2 (2026-11-14)**
+- A3 8L VDO clusters (8L0 920 9xx) accepted: **experimental and untested**, like the C5.
+- Mk4 Golf/Jetta and Passat B5/B5.5 VDO clusters are not supported: 300 dumps show no contrast table in their EEPROM.
 
 **1.1 (2026-11-14)**
 - Curve shape switch: factory calibration curve or measured cluster results (`shape` on the command line). The measured shape comes from **one cluster**, tested from -8 to 36 C. Experimental; factory stays the default.

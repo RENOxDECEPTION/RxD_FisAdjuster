@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RxD FIS Adjuster: contrast curve of the B5 (and C5, untested) Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
+"""RxD FIS Adjuster: contrast curve of the B5 (and C5 / A3 8L, untested) Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
 
 GUI:  python fis_adjuster.py
 CLI:  python fis_adjuster.py read --port COM3
@@ -22,7 +22,7 @@ import serial
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
 XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
-VERSION = '1.1'
+VERSION = '1.2'
 # Measured shape, EXPERIMENTAL: freezer and heated-bed runs on ONE cluster (bench D11, 2026-11-14). Offsets from point 3
 # (x 0x79, about 15 C): the hot points get 0x20 more drive, the cold points 0x1C less. Hotter needed more drive all the way
 # from -8 to 36 C, and cold overdrive washed the display out, so the factory's extra cold-end drive is dropped.
@@ -232,10 +232,10 @@ class Cluster:
             ident.append(bytes(b[3:]).decode('latin1'))
             self.send_block(0x09)
         name = ' '.join(s.strip() for s in ident[:3])
-        # B5 (8D0) and C5 A6/allroad (4B0, 4Z7) VDO clusters: same protocol and EEPROM layout. Later C5 "KOMBI+WEGFAHRS"
+        # B5 (8D0), C5 A6/allroad (4B0, 4Z7) and A3 8L (8L0) VDO clusters: same EEPROM layout. Later "KOMBI+WEGFAHRS"
         # units keep the tables elsewhere: they get past this, but check_layout refuses them before anything is written.
-        if not ident or not ident[0].startswith(('8D0920', '4B0920', '4Z7920')) or 'VDO' not in ''.join(ident[1:3]):
-            raise Fail('not a B5/C5 VDO cluster: %r' % name)
+        if not ident or not ident[0].startswith(('8D0920', '4B0920', '4Z7920', '8L0920')) or 'VDO' not in ''.join(ident[1:3]):
+            raise Fail('not a B5/C5/A3 VDO cluster: %r' % name)
         self.ident = name
         self.outside = None                # outside temperature from measuring block 2, field 4 (cars only; None if not plausible)
         if not getattr(self, 'no_blocks', False):
