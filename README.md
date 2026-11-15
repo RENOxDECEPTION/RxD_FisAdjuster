@@ -83,6 +83,10 @@ The **Curve shape** switch picks **Factory calibration curve** (default) or **Me
 
 How it was measured: the bench cluster came out of a freezer and was swept through every contrast byte, with a webcam photo at each one, as it warmed to room temperature. A heated-bed run continued the sweep up to about 36 C. The orange dots are the best byte at each temperature. It needed **more drive the hotter it got**, and when cold, extra drive washed the whole display out. The factory curve does the opposite. With a curve set on a cool day, expect fading on hot days.
 
+![freezer run](images/freezer_grid.jpg)
+
+From the freezer run: rows are display temperatures, columns are contrast bytes, and the blue box is the cleanest one. It moves one column to the right (more drive) for every few degrees warmer. At -8 C, more drive than 0x40 washes the whole display out (top right).
+
 **Measured on one cluster only** (an old, faded D11). A healthy panel may need a gentler slope. Set your level first, then try it, and check on a hot day and a cold morning.
 
 ### Backlight (experimental)
