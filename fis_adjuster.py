@@ -22,6 +22,19 @@ import serial
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
 XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
+VERSION = '1.1'
+# Measured shape, EXPERIMENTAL: freezer and heated-bed runs on ONE cluster (bench D11, 2026-11-14). Offsets from point 3
+# (x 0x79, about 15 C): the hot points get 0x20 more drive, the cold points 0x1C less. Hotter needed more drive all the way
+# from -8 to 36 C, and cold overdrive washed the display out, so the factory's extra cold-end drive is dropped.
+SHAPE = [-0x20, -0x20, 0, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C]
+
+
+def shaped(c):
+    """The measured shape, at the level the curve already has at point 3."""
+    return [min(0xFF, max(FLOOR, c[2] + d)) for d in SHAPE]
+
+
+assert shaped([0x30] * 10) == [0x10, 0x10, 0x30] + [0x4C] * 7 and shaped([0x3C] * 10) == [0x1C, 0x1C, 0x3C] + [0x58] * 7
 CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips by itself
 BACKUP_DIR = 'backups'
 
@@ -582,7 +595,7 @@ def gui():
     from serial.tools import list_ports
 
     root = tk.Tk()
-    root.title('RxD FIS Adjuster')
+    root.title('RxD FIS Adjuster ' + VERSION)
     q = queue.Queue()
     state = {'read': None, 'active': [], 'exact': False, 'busy': False, 'closing': False, 'km': None, 'outside': None, 'us': True, 'bl': None, 'bl_new': None, 'bl_base': None, 'bl_ofs': {}}
 
@@ -916,6 +929,13 @@ def gui():
         if c:
             set_new([v - n for v in c])
 
+    def shape():
+        c = new_curve()
+        if c:
+            set_new(shaped(c))
+            log('measured shape at your level %02X (point 3): hot end darker, cold end lighter. EXPERIMENTAL: measured on one '
+                'cluster. Darker/Lighter still move it as a whole.' % c[2])
+
     ttk.Button(top, text='Read', command=do_read).pack(side='left', padx=8)
 
     def do_cancel():
@@ -925,7 +945,7 @@ def gui():
     cancel_btn.pack(side='left')
     cancel_btn.state(['disabled'])
     for text, cmd in (('Darker', lambda: shift(8)), ('Lighter', lambda: shift(-8)),
-                      ('Factory', lambda: set_new(FACTORY)), ('Find position', do_probe)):
+                      ('Factory', lambda: set_new(FACTORY)), ('Measured shape', shape), ('Find position', do_probe)):
         ttk.Button(btns, text=text, command=cmd).pack(side='left', padx=2)
     for text, cmd in (('Load backup', do_restore), ('Write contrast + backlight', do_write)):
         ttk.Button(wrow, text=text, command=cmd).pack(side='left', padx=2)
@@ -957,6 +977,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('read', parents=[common])
     sub.add_parser('probe', parents=[common])
+    sub.add_parser('shape', parents=[common], help='apply the measured shape at the current level (EXPERIMENTAL)')
     s = sub.add_parser('shift', parents=[common])
     s._negative_number_matcher = re.compile(r'^-(0[xX])?[0-9a-fA-F]+$')     # let -0x10 through as a number
     s.add_argument('n', type=lambda v: int(v, 0), help='positive = darker, e.g. 0x10')
@@ -1017,6 +1038,7 @@ def main():
             print(probe(a.port, lambda m: {'y': True, 'n': False}.get(input(m + ' [y/n/c=cancel] ').strip().lower()[:1]))[0])
             return
         new = (clamp([v - a.n for v in cur]) if a.cmd == 'shift' else
+               shaped(cur) if a.cmd == 'shape' else
                clamp([int(v, 16) for v in a.curve.split()]) if a.cmd == 'set' else
                list(open(a.file, 'rb').read()[0x275:0x27F]))
         if len(new) != 10:
