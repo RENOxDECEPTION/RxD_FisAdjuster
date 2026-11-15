@@ -81,7 +81,7 @@ Also in the window:
 
 The **Curve shape** switch picks **Factory calibration curve** (default) or **Measured cluster results**. It keeps your level at point 3 and only changes the shape: the hot points 0x20 darker, the cold points 0x1C lighter.
 
-Why: a bench cluster tested from a freezer and on a heated bed needed **more drive the hotter it got**, and washed out when cold. That is the opposite of the factory curve. With a curve set on a cool day, expect fading on hot days.
+How it was measured: the bench cluster came out of a freezer and was swept through every contrast byte, with a webcam photo at each one, as it warmed to room temperature. A heated-bed run continued the sweep up to about 36 C. The orange dots are the best byte at each temperature. It needed **more drive the hotter it got**, and when cold, extra drive washed the whole display out. The factory curve does the opposite. With a curve set on a cool day, expect fading on hot days.
 
 **Measured on one cluster only** (an old, faded D11). A healthy panel may need a gentler slope. Set your level first, then try it, and check on a hot day and a cold morning.
 
