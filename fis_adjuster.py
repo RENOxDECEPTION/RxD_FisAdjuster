@@ -29,12 +29,19 @@ VERSION = '1.1'
 SHAPE = [-0x20, -0x20, 0, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C]
 
 
-def shaped(c):
-    """The measured shape, at the level the curve already has at point 3."""
-    return [min(0xFF, max(FLOOR, c[2] + d)) for d in SHAPE]
+def shaped(c, measured=True):
+    """The measured (or the factory) shape, at the level the curve already has at point 3."""
+    d = SHAPE if measured else [v - FACTORY[2] for v in FACTORY]
+    return [min(0xFF, max(FLOOR, c[2] + o)) for o in d]
+
+
+def shape_of(c):
+    return 'measured' if c == shaped(c) else 'factory' if c == shaped(c, False) else 'custom'
 
 
 assert shaped([0x30] * 10) == [0x10, 0x10, 0x30] + [0x4C] * 7 and shaped([0x3C] * 10) == [0x1C, 0x1C, 0x3C] + [0x58] * 7
+assert shaped(shaped([0x3C] * 10), False) == [0x3C] * 6 + [0x39, 0x39, 0x2C, 0x10] and shape_of(FACTORY) == 'factory'
+assert shape_of(shaped(FACTORY)) == 'measured' and shape_of([0x20] * 10) == 'custom'
 CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips by itself
 BACKUP_DIR = 'backups'
 
@@ -665,6 +672,8 @@ def gui():
         except ValueError:
             return None
 
+    shape_var = tk.StringVar(value='factory')
+
     def set_new(c):
         for e, v in zip(ent, clamp(c)):
             e.delete(0, 'end')
@@ -672,6 +681,8 @@ def gui():
         draw()
 
     def draw():
+        c = new_curve()
+        shape_var.set(shape_of(c) if c else 'custom')        # the switch follows the curve, typed or read
         cv.delete('all')
         px = lambda x: M + x * (W - 2 * M) / 255
         py = lambda y: M + y * (H - 2 * M) / 0x80          # 0 at top = darker, 0x80 at bottom = lighter
@@ -930,11 +941,18 @@ def gui():
             set_new([v - n for v in c])
 
     def shape():
-        c = new_curve()
+        c, m = new_curve(), shape_var.get() == 'measured'
         if c:
-            set_new(shaped(c))
-            log('measured shape at your level %02X (point 3): hot end darker, cold end lighter. EXPERIMENTAL: measured on one '
-                'cluster. Darker/Lighter still move it as a whole.' % c[2])
+            set_new(shaped(c, m))
+            log(('measured cluster results at your level %02X (point 3): hot end darker, cold end lighter. EXPERIMENTAL: '
+                 'measured on one cluster.' if m else 'factory calibration shape at your level %02X (point 3).') % c[2])
+
+    srow = ttk.Frame(cfr)
+    srow.pack()
+    ttk.Label(srow, text='Curve shape:').pack(side='left', padx=4)
+    ttk.Radiobutton(srow, text='Factory calibration curve', variable=shape_var, value='factory', command=shape).pack(side='left')
+    ttk.Radiobutton(srow, text='Measured cluster results (1 cluster, experimental)', variable=shape_var, value='measured',
+                    command=shape).pack(side='left', padx=6)
 
     ttk.Button(top, text='Read', command=do_read).pack(side='left', padx=8)
 
@@ -945,7 +963,7 @@ def gui():
     cancel_btn.pack(side='left')
     cancel_btn.state(['disabled'])
     for text, cmd in (('Darker', lambda: shift(8)), ('Lighter', lambda: shift(-8)),
-                      ('Factory', lambda: set_new(FACTORY)), ('Measured shape', shape), ('Find position', do_probe)):
+                      ('Factory', lambda: set_new(FACTORY)), ('Find position', do_probe)):
         ttk.Button(btns, text=text, command=cmd).pack(side='left', padx=2)
     for text, cmd in (('Load backup', do_restore), ('Write contrast + backlight', do_write)):
         ttk.Button(wrow, text=text, command=cmd).pack(side='left', padx=2)
@@ -977,7 +995,8 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('read', parents=[common])
     sub.add_parser('probe', parents=[common])
-    sub.add_parser('shape', parents=[common], help='apply the measured shape at the current level (EXPERIMENTAL)')
+    s = sub.add_parser('shape', parents=[common], help='curve shape at the current level: measured (EXPERIMENTAL) or factory')
+    s.add_argument('which', choices=['measured', 'factory'])
     s = sub.add_parser('shift', parents=[common])
     s._negative_number_matcher = re.compile(r'^-(0[xX])?[0-9a-fA-F]+$')     # let -0x10 through as a number
     s.add_argument('n', type=lambda v: int(v, 0), help='positive = darker, e.g. 0x10')
@@ -1038,7 +1057,7 @@ def main():
             print(probe(a.port, lambda m: {'y': True, 'n': False}.get(input(m + ' [y/n/c=cancel] ').strip().lower()[:1]))[0])
             return
         new = (clamp([v - a.n for v in cur]) if a.cmd == 'shift' else
-               shaped(cur) if a.cmd == 'shape' else
+               shaped(cur, a.which == 'measured') if a.cmd == 'shape' else
                clamp([int(v, 16) for v in a.curve.split()]) if a.cmd == 'set' else
                list(open(a.file, 'rb').read()[0x275:0x27F]))
         if len(new) != 10:

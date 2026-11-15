@@ -111,15 +111,15 @@ Run `python fis_adjuster.py` with no arguments for the window. It shows:
 
 The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the car needed 0x14 (0x50 to 0x3C).
 
-### Measured shape (experimental, one cluster)
+### Curve shape: factory or measured (experimental, one cluster)
 
 ![factory vs measured curve](images/curve_vs_factory.png)
 
-**Measured shape** (or `python fis_adjuster.py shape --port COM3 --write`) replaces the factory shape with one measured on a real panel. It keeps your level at point 3 (x 0x79, about 15 C), sets the two hot points 0x20 darker and the seven cold points 0x1C lighter. Darker and Lighter still move it as a whole.
+The **Curve shape** switch under the graph picks between **Factory calibration curve** (the default) and **Measured cluster results**. Switching keeps your level at point 3 (x 0x79, about 15 C) and only changes the shape around it: the measured one sets the two hot points 0x20 darker and the seven cold points 0x1C lighter. Switch back any time; Darker and Lighter still move the whole curve. If you type your own values, neither option is selected. Command line: `python fis_adjuster.py shape measured --port COM3 --write` (or `shape factory`).
 
 Why: the bench cluster was taken from a freezer and then put on a heated bed, with the best contrast byte photographed at each temperature. From about -8 to 36 C it needed **more drive the hotter it got**, and when cold, too much drive washed the whole display out. The factory curve does the opposite: it is flat up to the hot end and adds drive at the cold end. With a curve set on a cool day, expect the text to fade on hot days.
 
-**This was measured on one cluster only**, an old and faded D11. A healthy panel may need a gentler slope. Set your level first (Steps above), then try Measured shape, and check the display on a hot day and a cold morning. The temperatures on the graph come from a fit to the freezer run and are estimates, good to a few degrees between 0 and 40 C. Reports welcome.
+**This was measured on one cluster only**, an old and faded D11. A healthy panel may need a gentler slope. Set your level first (Steps above), then switch to Measured cluster results, and check the display on a hot day and a cold morning. The temperatures on the graph come from a fit to the freezer run and are estimates, good to a few degrees between 0 and 40 C. Reports welcome.
 
 **Every write does all of this:**
 - Reads the whole EEPROM twice and saves `backups/fis_backup_<date>.bin` before changing anything. Keep those files.
@@ -200,7 +200,7 @@ Use at your own risk. Keep your backup file.
 ## Changes
 
 **1.1 (2026-11-14)**
-- **Measured shape** button and `shape` command: a contrast curve shape measured from about -8 to 36 C on **one cluster** (bench D11) in a freezer and heated-bed test. More drive when hot, less when cold, the opposite of the factory curve. Experimental: see "Measured shape" above.
+- **Curve shape switch** (factory calibration curve / measured cluster results) and `shape measured|factory` command. The measured shape comes from about -8 to 36 C on **one cluster** (bench D11), in a freezer and heated-bed test. More drive when hot, less when cold, the opposite of the factory curve. Factory stays the default. Experimental: see "Curve shape" above.
 - C5 A6/allroad VDO clusters are accepted, **experimental and untested** (see "What you need").
 - The odometer write now checks the EEPROM layout too, like the contrast and backlight writes.
 - The window title shows the version.
