@@ -1,209 +1,140 @@
 # RxD FIS Adjuster
 
-Fix a faded or blank centre display (FIS) on a B5 Audi VDO instrument cluster (C5 A6/allroad VDO clusters too: experimental and untested, see "What you need") by raising its contrast. It works through the OBD port with a cheap K-line cable. No soldering, no new LCD.
+Fix a faded or blank centre display (FIS) on a B5 Audi VDO cluster by raising its contrast, through the OBD port with a cheap K-line cable. No soldering, no new LCD. C5 A6/allroad clusters: experimental, see [What you need](#what-you-need).
 
 ![factory vs adjusted](images/before_after.jpg)
 
-Left: a junk B5 cluster at the factory contrast setting. The display looks dead. Right: the same cluster after this tool lowered its contrast byte from 0x50 to 0x20. The text was there all along, just below what the eye can see.
+Left: a junk B5 cluster at the factory contrast (0x50), looking dead. Right: the same cluster at 0x20. The text was there all along.
 
 ![in the car](images/car_before_after.jpg)
 
-A second cluster, in a car, through the OBD port. At the factory value (0x50) it was losing letters, which looked like the usual ribbon fault. At 0x3C every line is solid.
+A second cluster, in a car. At 0x50 it was losing letters, which looked like a ribbon fault. At 0x3C every line is solid.
 
-## What it fixes, and what it does not
+## What it fixes
 
-**Fixes:**
-- A FIS that is evenly faint, washed out or completely blank, while the backlight is on.
-- Letters or parts of letters that are missing because the display is right at the edge of fading. The car in the photo above looked like it had a ribbon fault; it was contrast.
+- **Fixes:** a FIS that is evenly faint, washed out or blank while the backlight is on, or missing letters because it is right at the edge of fading.
+- **Does not fix:** lines or columns that stay dead at any contrast, or pixels that drop out when warm and come back when you press the glass. That is the ribbon or its driver chip: a hardware repair.
 
-**Does not fix:**
-- Whole lines or columns of pixels that stay dead whatever contrast you set.
-- Pixels that drop out when the cluster warms up and come back when you press on the display.
-
-Those come from the heat-sealed ribbon between the glass and the board, or from the driver chip on it. They need a hardware repair. If you are not sure which you have, try this first: it costs nothing and the backup puts you back to stock.
+Not sure which you have? Try this first. It is free, and the backup puts you back to stock.
 
 ## How it works
 
-The cluster EEPROM (93C86) holds a 10-point contrast curve at 0x26A:
+The cluster EEPROM (93C86) holds a 10-point contrast curve at 0x26A: a count (`0A`), 10 x breakpoints (`21 3E 79 A5 B7 BF C6 CC D1 D6`) and 10 contrast bytes (factory `50 50 50 50 50 50 4D 4D 40 1F`).
 
-| Address | Bytes | Meaning |
-|---|---|---|
-| 0x26A | `0A` | number of points |
-| 0x26B-0x274 | `21 3E 79 A5 B7 BF C6 CC D1 D6` | x breakpoints, identical on every unit seen |
-| 0x275-0x27E | `50 50 50 50 50 50 4D 4D 40 1F` | contrast byte per point (factory) |
-
-**A lower contrast byte means more LCD drive:** stronger pixels. The cluster picks the value for its current x by interpolating between points.
-
-**x is the display's temperature sensor. Hotter = lower x, colder = higher x.** That direction is measured: warming a cluster on a heated bed moved its x steadily down. So the left of the table is the hot end, and the factory curve only adds drive at the cold end (0xC6 and up).
-
-The temperatures below are **guesses, not a calibration**. They assume an ordinary NTC sensor and are pinned to a single in-car reading (x = 0x79 with the cabin taken as 15 C). Expect them to be off by 5 C near room temperature and by more at the ends.
+- **Lower byte = more drive = darker pixels.**
+- **x is the display's temperature sensor: left = hot, right = cold** (measured on a heated bed and from a freezer). The factory curve only adds drive at the cold end.
 
 | x | 21 | 3E | 79 | A5 | B7 | BF | C6 | CC | D1 | D6 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| about C (guess) | +65 | +42 | +15 | -1 | -8 | -11 | -14 | -16 | -19 | -21 |
-| factory | 50 | 50 | 50 | 50 | 50 | 50 | 4D | 4D | 40 | 1F |
+| about C (estimate) | +65 | +42 | +15 | -1 | -8 | -11 | -14 | -16 | -19 | -21 |
 
-In practice: at any normal cabin temperature the cluster sits between the 2nd and 4th points, on the flat part of the factory curve. Exact readings so far: 0x79 in a car on a 10 C day, and 0x5C falling to 0x4B on a bench cluster warmed to about 36 C (the guess predicts 0x48 there).
+The temperatures are estimates. A freezer run backs them to within a few degrees from 0 to 40 C; the ends are rougher.
 
 ![sweep](images/contrast_sweep.gif)
 
-Every value from 0x50 down to 0x10, measured on the bench cluster at room temperature:
+The usable window is narrow and different on every display:
 
-| Contrast byte | Result |
-|---|---|
-| 0x50-0x44 | blank (factory is 0x50) |
-| 0x3C-0x38 | text first appears |
-| 0x30-0x2C | readable but faint |
-| 0x28-0x1C | clean |
-| 0x18 | ghosting starts |
-| 0x14-0x10 | heavy cross-hatch: unlit pixels turn partly on |
+| Byte | Bench D11 (room temp) | In-car D13 |
+|---|---|---|
+| 0x54-0x50 | blank | blank to faded, letters missing |
+| 0x48-0x40 | blank | clean |
+| 0x3C-0x38 | text appears | best at 0x3C, then ghosting |
+| 0x30-0x2C | faint | ghosting |
+| 0x28-0x1C | clean | |
+| 0x18-0x10 | ghosting, then cross-hatch | |
 
-Full contact sheet: [images/sweep_sheet.jpg](images/sweep_sheet.jpg).
-
-The second cluster (a D13, in the car) needed far less:
-
-![car sweep](images/car_sweep.jpg)
-
-| Contrast byte | Result on the in-car D13 |
-|---|---|
-| 0x54 | blank |
-| 0x50 (factory) | faded, letters missing |
-| 0x48-0x40 | clean |
-| 0x3C | strongest text, first trace of ghosting |
-| 0x38 and below | ghosting |
-
-So the usable window is narrow (about 0x10 wide) and sits in a different place on every display. The right value depends on how far yours has faded: adjust in steps (see below).
-
-The tool shifts the whole curve by the same amount, so the cluster's own temperature correction keeps working. It never writes below 0x10.
+Contact sheets: [bench](images/sweep_sheet.jpg), [car](images/car_sweep.jpg).
 
 ## What you need
 
-- A B5 VDO cluster (part number 8D0 920 9xx, ident "B5-KOMBIINSTR. VDO") or a C5 A6/allroad VDO cluster (4B0 920 9xx or 4Z7 920 9xx, ident "C5-KOMBIINSTR. VDO"). The app checks the part number and the EEPROM layout and refuses anything else, including the early 4B0 920 900 units and the later "KOMBI+WEGFAHRS" ones, whose tables sit elsewhere.
+- A B5 VDO cluster (8D0 920 9xx, ident "B5-KOMBIINSTR. VDO"), or a C5 A6/allroad VDO cluster (4B0 920 9xx or 4Z7 920 9xx, ident "C5-KOMBIINSTR. VDO"). The app refuses anything else, including early 4B0 920 900 and later "KOMBI+WEGFAHRS" units.
+- An FTDI-based KKL / VAG-COM 409.1 K-line cable.
+- Python 3 with `pip install pyserial` (tkinter ships with Python on Windows; on Linux install `python3-tk`).
+- Ignition on. On a bench: +12 V on blue 23 and 1, ground on blue 7, 9 and 24, K-line on green 28.
 
-> **C5 support is EXPERIMENTAL.** Every C5 read and write is untested, on the bench and in a car: no C5 cluster has been connected to this tool yet. Support is based only on 13 C5 EEPROM dumps that match the B5 layout byte for byte. **If you try it on a C5, please [open an issue](https://github.com/RENOxDECEPTION/RxD_FisAdjuster/issues) whether it worked or failed**, with your part number and ident.
+> **C5 support is EXPERIMENTAL.** Every C5 read and write is untested, on the bench and in a car: no C5 cluster has been connected to this tool yet. It is based only on 13 C5 EEPROM dumps that match the B5 layout byte for byte. **If you try it on a C5, please [open an issue](https://github.com/RENOxDECEPTION/RxD_FisAdjuster/issues) whether it worked or failed**, with your part number and ident.
 
-- A "dumb" FTDI-based KKL / VAG-COM 409.1 K-line cable.
-- Python 3 with `pip install pyserial`. The GUI uses tkinter, which ships with Python on Windows. On Linux install `python3-tk`.
-- Ignition on. On the bench, the cluster needs +12 V on blue pins 23 and 1, ground on blue 7, 9 and 24, and the K-line on green 28.
+## Using the app
 
-## The app
+![app](images/app_v11.png)
 
-![app](images/app.png)
+Run `python fis_adjuster.py`.
 
-Run `python fis_adjuster.py` with no arguments for the window. It shows:
-- **The table:** the x breakpoints, the factory curve, the curve in your cluster, and the new curve you are editing.
-- **The graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app will not write below.
-- **Tabs:** Display (contrast and backlight), Odometer and Clock are kept apart.
-- **Units:** the box next to the port switches between F / miles and C / km.
-- **Cancel:** stops a Read or Write that is still trying to connect, for when you picked the wrong port. Once the cluster has answered, the job always runs to the end so nothing is left half written.
-- **About F or C (guess):** the guessed temperature of each point (see above).
-- **Backlight:** two sliders, see below.
-- **Active (green band):** the points the cluster is using right now. There are two ways to get it:
-  - **A guess, no writes.** Type the display's temperature in C into the box at the top. In a car, **Read** fills it in from the car's outside temperature sensor. That is only right after the car has sat for hours; once the cabin warms up, type your own number. The band is labelled "active (guess)".
-  - **Exact, 3-4 test writes: Find position.** It lights one point at a time and asks whether text shows, so the display must have some text on it. Your curve is put back afterwards, and Cancel stops it at any question.
-  - The cluster cannot report this itself: a second processor inside it reads the sensor and does the lookup, and it does not pass the reading back to the diagnostic side.
-
-**Steps to follow:**
 1. **Read.**
-2. Press **Darker** once or twice: each press moves the whole curve 8 steps.
-3. **Write contrast + backlight.** The display updates a few seconds after the write; no ignition cycle is needed.
+2. Press **Darker** once or twice (8 steps each).
+3. **Write contrast + backlight.** The display updates in a few seconds.
 4. Repeat until the text is clean. If you see a faint grid or ghost pixels, press **Lighter** and write again.
 
-The bench cluster needed 0x30 in total (factory 0x50 to 0x20). The one in the car needed 0x14 (0x50 to 0x3C).
+The bench cluster went from 0x50 to 0x20, the car one from 0x50 to 0x3C.
 
-### Curve shape: factory or measured (experimental, one cluster)
+Also in the window:
+- **Graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app never writes below.
+- **Active points (green band):** type the display temperature to estimate them, or use **Find position** (3-4 test writes, asks whether text shows, puts your curve back).
+- **Cancel:** stops a Read or Write that is still trying to connect. Once connected, a job always finishes.
+- **Load backup** + **Write** puts an old contrast curve and backlight back.
+
+**Every write:** reads the EEPROM twice and saves `backups/fis_backup_<date>.bin` first (keep these), refuses an unknown layout, writes only the rows that changed, restarts the display, verifies the whole EEPROM and puts the clock back.
+
+### Curve shape (experimental, one cluster)
 
 ![factory vs measured curve](images/curve_vs_factory.png)
 
-The **Curve shape** switch under the graph picks between **Factory calibration curve** (the default) and **Measured cluster results**. Switching keeps your level at point 3 (x 0x79, about 15 C) and only changes the shape around it: the measured one sets the two hot points 0x20 darker and the seven cold points 0x1C lighter. Switch back any time; Darker and Lighter still move the whole curve. If you type your own values, neither option is selected. Command line: `python fis_adjuster.py shape measured --port COM3 --write` (or `shape factory`).
+The **Curve shape** switch picks **Factory calibration curve** (default) or **Measured cluster results**. It keeps your level at point 3 and only changes the shape: the hot points 0x20 darker, the cold points 0x1C lighter.
 
-Why: the bench cluster was taken from a freezer and then put on a heated bed, with the best contrast byte photographed at each temperature. From about -8 to 36 C it needed **more drive the hotter it got**, and when cold, too much drive washed the whole display out. The factory curve does the opposite: it is flat up to the hot end and adds drive at the cold end. With a curve set on a cool day, expect the text to fade on hot days.
+Why: a bench cluster tested from a freezer and on a heated bed needed **more drive the hotter it got**, and washed out when cold. That is the opposite of the factory curve. With a curve set on a cool day, expect fading on hot days.
 
-**This was measured on one cluster only**, an old and faded D11. A healthy panel may need a gentler slope. Set your level first (Steps above), then switch to Measured cluster results, and check the display on a hot day and a cold morning. The temperatures on the graph come from a fit to the freezer run and are estimates, good to a few degrees between 0 and 40 C. Reports welcome.
-
-**Every write does all of this:**
-- Reads the whole EEPROM twice and saves `backups/fis_backup_<date>.bin` before changing anything. Keep those files.
-- Refuses to write unless the curve's x axis matches the known layout exactly.
-- Writes only the 16-byte rows that changed: 0x270 for contrast (only the ten contrast bytes change), plus 0x200 and 0x210 if you moved a backlight slider.
-- Restarts the display, logs in again and verifies the whole EEPROM.
-- Puts the clock back. The display restart resets the cluster's clock to 12:00 on the bench cluster, so the app reads the time before the restart and writes it back afterwards.
-
-**Load backup** puts the contrast curve and the backlight values from an old backup into "new"; then **Write** restores them. Nothing else is taken from the file.
+**Measured on one cluster only** (an old, faded D11). A healthy panel may need a gentler slope. Set your level first, then try it, and check on a hot day and a cold morning.
 
 ### Backlight (experimental)
 
 ![backlight sweep](images/backlight_sweep.gif)
 
-The EEPROM also holds the backlight brightness tables, in the same count / x / y format as the contrast table. Higher = brighter.
-
-| Table at | Factory values | Lights |
-|---|---|---|
-| 0x205 | `0F 29 93 FF FF` | FIS, top section |
-| 0x210 | `0F 29 93 FF FF` | FIS, lower section |
-| 0x1FE | `0F 29 FF` | clock and odometer displays |
-
-- The app has one slider for the FIS (both sections together) and one for the clock and odometer. The middle of the slider is what is in the cluster now; **Factory** puts the factory values back. The same Write button applies it.
-- **This is tested on one bench cluster only (D11), not in a car yet.** The GIF shows all three tables set flat from 0x00 to 0xFF on that cluster.
-- The factory tables already end at FF. Moving the slider up lifts the dim and middle part of the curve; if your car already runs at the top of it, you will see no change.
-- The app refuses to write these tables unless their layout matches the known one.
+Two sliders: one for the FIS, one for the clock and odometer. The middle is what is in the cluster now, and **Factory** restores the default. The factory tables already end at full brightness, so the slider mostly lifts the dim and middle range. Tested on the bench D11 only.
 
 ### Clock
 
-The **Clock** tab sets the cluster's time and date from the PC. It writes the running clock in the cluster's memory, not the EEPROM, so there is no backup step. After a battery disconnect the cluster always starts at 12:00, 1.01.1999: that default is fixed in its firmware and cannot be changed.
-
-Tested on the bench D11 only. The app first checks that the bytes it is about to write hold a valid, ticking date; on a cluster version that keeps its clock elsewhere it does nothing and says so.
+The **Clock** tab sets the cluster's time and date from the PC. It is a memory write, not an EEPROM write. After a battery disconnect the cluster always starts at 12:00, 1.01.1999 (fixed in its firmware). Tested on the bench D11 only. The app checks that it has found a ticking clock before it writes.
 
 ### Odometer, for swapped clusters
 
-If you fit a replacement cluster, it shows the donor car's mileage. On the **Odometer** tab, **Read** shows the stored odometer, and **Set odometer** writes the value you type, in miles or km. Set it to the car's true mileage; misstating mileage is illegal in most places.
+The **Odometer** tab sets a replacement cluster to the car's true mileage, in miles or km. Misstating mileage is illegal in most places.
 
-- It makes the same backup first, writes only the 16 odometer bytes (0x042-0x051), and verifies the whole EEPROM afterwards.
-- Check first that the value the app reads matches your dash to within a mile or two. If it does not, your cluster stores it differently: do not write.
-- The dash can land a mile or two from what you typed. The stored value has 2 km steps, and the offset between it and the dash was measured on one cluster. Look at the dash afterwards and set it again if needed.
-- Tested on the bench D11 only.
+- Check first that the value the app reads matches your dash within a mile or two. If it does not, do not write.
+- It can land a mile or two off. Look at the dash and set it again if needed.
+- Same backup and verify as above. Tested on the bench D11 only.
 
 ### Command line
 
 ```
-python fis_adjuster.py read    --port COM3                    # Linux: --port /dev/ttyUSB0. Also prints the temperature guesses
-python fis_adjuster.py shift 0x10 --port COM3                 # preview, positive = darker
-python fis_adjuster.py shift 0x10 --port COM3 --write
+python fis_adjuster.py read    --port COM3                    # Linux: --port /dev/ttyUSB0
+python fis_adjuster.py shift 0x10 --port COM3 --write         # positive = darker; without --write it only previews
 python fis_adjuster.py set "28 28 28 28 28 28 25 25 18 10" --port COM3 --write
-python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write   # contrast and backlight from a backup
+python fis_adjuster.py shape measured --port COM3 --write     # or: shape factory
+python fis_adjuster.py restore backups/fis_backup_X.bin --port COM3 --write
 python fis_adjuster.py probe   --port COM3                    # find the active point (asks y/n)
-python fis_adjuster.py odometer 201370 --miles --port COM3 --write   # swapped cluster: set the true mileage (km without --miles)
-python fis_adjuster.py backlight fis 0x10 --port COM3 --write        # experimental: fis or clock, positive = brighter
-python fis_adjuster.py clock --port COM3 --write                     # set the cluster clock to the PC's time
+python fis_adjuster.py odometer 201370 --miles --port COM3 --write
+python fis_adjuster.py backlight fis 0x10 --port COM3 --write # fis or clock, positive = brighter
+python fis_adjuster.py clock --port COM3 --write
 ```
 
 ## Notes
 
-- **Tested on two clusters so far**, both from Windows:
-  - 8D0 920 980 C, "VDO D11", on the bench.
-  - 8D0 920 980 CX, "VDO D13", in a car through the OBD port. Its factory curve is `50 50 50 50 50 50 4E 4E 40 1F`; the app's "factory" row shows the D11 values, so use your own backup to go back to stock.
-  - Linux should work through pyserial but has not been tried. The same table appears at the same address in D12 dumps, not adjusted yet. Reports are welcome.
-- **Backlight and clock are tested on the bench D11 only**, not on the D13 and not in a car.
-- **The temperature figures are guesses.** Only the direction is measured. If you can read your cluster at a known cold or hot temperature, please report x and the temperature.
-- **The cluster counts EEPROM writes** in byte 0x294. Each write adds one, odometer writes included.
-- **Odometer storage:** 8 little-endian words at 0x042, each the inverse of a counter in 16 km units; the number of words one step ahead adds 2 km each. Stored value = shown km + 52 (measured; other tools use + 50).
-- **Protocol:** KW1281 at address 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`. The commands used are:
-  - `72` read 16 EEPROM bytes
-  - `77` write 16 EEPROM bytes
-  - `53 9D <password>` log in
-  - `53 82` restart the display after a write
-
-  The firmware also accepts `52`/`57` (read/write CPU memory), which is how this was found. The clock is set with `57`: on the D11 the running time is at RAM 0x0213 (year, month, day, hour, minute, second).
-- **Bench tip:** if you switch the cluster's 12 V with the cable plugged in, some KKL cables lock up their USB driver until they are replugged.
+- **Tested on:** 8D0 920 980 C "VDO D11" on the bench, and 8D0 920 980 CX "VDO D13" in a car (contrast only). Windows only so far.
+- The D13's factory curve is `50 50 50 50 50 50 4E 4E 40 1F`. The app's "factory" row shows the D11 values, so use your own backup to return to stock.
+- The cluster counts EEPROM writes in byte 0x294.
+- **Odometer storage:** 8 little-endian words at 0x042, each the inverse of a 16 km counter. Stored = shown km + 52.
+- **Protocol:** KW1281 at 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`: `72`/`77` read/write 16 EEPROM bytes, `53 9D <password>` log in, `53 82` restart the display. `52`/`57` read/write CPU memory; the D11 clock is at RAM 0x0213.
+- **Bench tip:** switching the cluster's 12 V with the cable plugged in can lock up some KKL cables until they are replugged.
 
 Use at your own risk. Keep your backup file.
 
 ## Changes
 
 **1.1 (2026-11-14)**
-- **Curve shape switch** (factory calibration curve / measured cluster results) and `shape measured|factory` command. The measured shape comes from about -8 to 36 C on **one cluster** (bench D11), in a freezer and heated-bed test. More drive when hot, less when cold, the opposite of the factory curve. Factory stays the default. Experimental: see "Curve shape" above.
-- C5 A6/allroad VDO clusters are accepted, **experimental and untested** (see "What you need").
-- The odometer write now checks the EEPROM layout too, like the contrast and backlight writes.
-- The window title shows the version.
+- Curve shape switch: factory calibration curve or measured cluster results (`shape` on the command line). The measured shape comes from **one cluster**, tested from -8 to 36 C. Experimental; factory stays the default.
+- C5 A6/allroad VDO clusters accepted: **experimental and untested**.
+- The odometer write now checks the EEPROM layout too.
+- The version is shown in the window title.
 
 **1.0**
-- Everything before: contrast curve read/write with backup and verify, Find position, odometer, backlight (experimental) and clock.
+- Contrast read/write with backup and verify, Find position, odometer, backlight (experimental) and clock.
