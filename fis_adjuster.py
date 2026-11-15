@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RxD FIS Adjuster: contrast curve of the B5 Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
+"""RxD FIS Adjuster: contrast curve of the B5 (and C5, untested) Audi VDO cluster centre display (FIS), plus odometer set for swapped clusters.
 
 GUI:  python fis_adjuster.py
 CLI:  python fis_adjuster.py read --port COM3
@@ -212,8 +212,10 @@ class Cluster:
             ident.append(bytes(b[3:]).decode('latin1'))
             self.send_block(0x09)
         name = ' '.join(s.strip() for s in ident[:3])
-        if not ident or not ident[0].startswith('8D0920') or 'VDO' not in ''.join(ident[1:3]):
-            raise Fail('not a B5 VDO cluster: %r' % name)
+        # B5 (8D0) and C5 A6/allroad (4B0, 4Z7) VDO clusters: same protocol and EEPROM layout. Later C5 "KOMBI+WEGFAHRS"
+        # units keep the tables elsewhere: they get past this, but check_layout refuses them before anything is written.
+        if not ident or not ident[0].startswith(('8D0920', '4B0920', '4Z7920')) or 'VDO' not in ''.join(ident[1:3]):
+            raise Fail('not a B5/C5 VDO cluster: %r' % name)
         self.ident = name
         self.outside = None                # outside temperature from measuring block 2, field 4 (cars only; None if not plausible)
         if not getattr(self, 'no_blocks', False):
@@ -497,6 +499,7 @@ def set_odometer(port, km, log=print):
         img = cl.read_twice()
         bak = backup(img)
         log('backup: ' + bak)
+        check_layout(img)                        # only clusters with the known EEPROM layout
         old = ring_km(img)                       # refuses a ring it does not understand
         new = ring_bytes(km)
         log('odometer %d km -> %d km' % (old, km))

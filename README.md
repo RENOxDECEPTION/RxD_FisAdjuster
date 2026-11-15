@@ -1,6 +1,6 @@
 # RxD FIS Adjuster
 
-Fix a faded or blank centre display (FIS) on a B5 Audi VDO instrument cluster by raising its contrast. It works through the OBD port with a cheap K-line cable. No soldering, no new LCD.
+Fix a faded or blank centre display (FIS) on a B5 Audi VDO instrument cluster (C5 A6/allroad VDO clusters too: experimental and untested, see "What you need") by raising its contrast. It works through the OBD port with a cheap K-line cable. No soldering, no new LCD.
 
 ![factory vs adjusted](images/before_after.jpg)
 
@@ -78,7 +78,10 @@ The tool shifts the whole curve by the same amount, so the cluster's own tempera
 
 ## What you need
 
-- A B5 VDO cluster, part number 8D0 920 9xx, ident "B5-KOMBIINSTR. VDO". The app checks both and refuses anything else.
+- A B5 VDO cluster (part number 8D0 920 9xx, ident "B5-KOMBIINSTR. VDO") or a C5 A6/allroad VDO cluster (4B0 920 9xx or 4Z7 920 9xx, ident "C5-KOMBIINSTR. VDO"). The app checks the part number and the EEPROM layout and refuses anything else, including the early 4B0 920 900 units and the later "KOMBI+WEGFAHRS" ones, whose tables sit elsewhere.
+
+> **C5 support is EXPERIMENTAL.** Every C5 read and write is untested, on the bench and in a car: no C5 cluster has been connected to this tool yet. Support is based only on 13 C5 EEPROM dumps that match the B5 layout byte for byte. **If you try it on a C5, please [open an issue](https://github.com/RENOxDECEPTION/RxD_FisAdjuster/issues) whether it worked or failed**, with your part number and ident.
+
 - A "dumb" FTDI-based KKL / VAG-COM 409.1 K-line cable.
 - Python 3 with `pip install pyserial`. The GUI uses tkinter, which ships with Python on Windows. On Linux install `python3-tk`.
 - Ignition on. On the bench, the cluster needs +12 V on blue pins 23 and 1, ground on blue 7, 9 and 24, and the K-line on green 28.
