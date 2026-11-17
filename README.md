@@ -1,6 +1,6 @@
 # RxD FIS Adjuster
 
-Fix a faded or blank centre display (FIS) on a B5 Audi VDO cluster by raising its contrast, through the OBD port with a cheap K-line cable. No soldering, no new LCD. C5 A6/allroad and A3 8L clusters: experimental, see [What you need](#what-you-need).
+Fix a faded, dim or blank centre display (FIS, the dash's trip computer screen) on an Audi A4/S4/RS4 B5 (1996-2001) VDO instrument cluster by raising its LCD contrast, through the OBD port with a cheap K-line cable. No soldering, no new LCD. C5 A6/allroad and A3 8L clusters: experimental, see [What you need](#what-you-need).
 
 ![factory vs adjusted](images/before_after.jpg)
 
@@ -131,6 +131,10 @@ python fis_adjuster.py clock --port COM3 --write
 - **Bench tip:** switching the cluster's 12 V with the cable plugged in can lock up some KKL cables until they are replugged.
 
 Use at your own risk. Keep your backup file.
+
+## License
+
+MIT, see [LICENSE](LICENSE). You can use, change and share it, including in other tools, as long as you keep the copyright notice and credit RxD FIS Adjuster by RENOxDECEPTION.
 
 ## Changes
 
