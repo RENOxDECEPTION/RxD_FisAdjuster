@@ -26,9 +26,9 @@ The cluster EEPROM (93C86) holds a 10-point contrast curve at 0x26A: a count (`0
 
 | x | 21 | 3E | 79 | A5 | B7 | BF | C6 | CC | D1 | D6 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| about C (estimate) | +65 | +42 | +15 | -1 | -8 | -11 | -14 | -16 | -19 | -21 |
+| about C (estimate) | +69 | +43 | +14 | -3 | -10 | -14 | -17 | -20 | -22 | -25 |
 
-The temperatures are estimates. A freezer run backs them to within a few degrees from 0 to 40 C; the ends are rougher.
+The temperatures are estimates, fitted to a freezer warm-up run: within a few degrees from 0 to 40 C, rougher at the ends.
 
 ![sweep](images/contrast_sweep.gif)
 
@@ -69,7 +69,7 @@ The bench cluster went from 0x50 to 0x20, the car one from 0x50 to 0x3C.
 
 Also in the window:
 - **Graph:** gray = factory, blue = in the cluster, red = new. Up is darker. The pink band is the 0x10 floor the app never writes below.
-- **Active points (green band):** type the display temperature to estimate them, or use **Find position** (3-4 test writes, asks whether text shows, puts your curve back).
+- **Active points (green band):** in a car, **Read** fills in the outside temperature from the car's sensor (only right after the car has sat for hours; type your own once the cabin warms up). The graph then marks the active points and the byte the display uses at that temperature ("uses ~53"). **Find position** gives the exact points instead (3-4 test writes, asks whether text shows, puts your curve back).
 - **Cancel:** stops a Read or Write that is still trying to connect. Once connected, a job always finishes.
 - **Load backup** + **Write** puts an old contrast curve and backlight back.
 
@@ -87,7 +87,11 @@ How it was measured: the bench cluster came out of a freezer and was swept throu
 
 From the freezer run: rows are display temperatures, columns are contrast bytes, and the blue box is the cleanest one. It moves one column to the right (more drive) for every few degrees warmer. At -8 C, more drive than 0x40 washes the whole display out (top right).
 
-**Measured on one cluster only** (an old, faded D11). A healthy panel may need a gentler slope. Set your level first, then try it, and check on a hot day and a cold morning.
+![in-car D13 at 0 C](images/car_cold_before_after.jpg)
+
+Checked on a second cluster, the D13 in my car, at 0 C outside. Left: my old curve (`3C` through the middle). The FIS is overdriven: washed-out background and a ghost grid. Right: the measured shape at the same level, clean.
+
+**Measured on one cluster and checked on a second, both in the cold.** The hot end is not checked in a car yet. Set your level first, then try it, and check on a hot day and a cold morning.
 
 ### Backlight (experimental)
 
@@ -97,7 +101,7 @@ Two sliders: one for the FIS, one for the clock and odometer. The middle is what
 
 ### Clock
 
-The **Clock** tab sets the cluster's time and date from the PC. It is a memory write, not an EEPROM write. After a battery disconnect the cluster always starts at 12:00, 1.01.1999 (fixed in its firmware). Tested on the bench D11 only. The app checks that it has found a ticking clock before it writes.
+The **Clock** tab sets the cluster's time and date from the PC. It is a memory write, not an EEPROM write. After a battery disconnect the cluster always starts at 12:00, 1.01.1999 (fixed in its firmware). Works on the D11 and the D13, which keep the clock at different addresses: the app uses whichever one ticks, and refuses if neither does. Every contrast write restarts the display, which resets the clock, so the app puts the time back afterwards.
 
 ### Odometer, for swapped clusters
 
@@ -127,7 +131,7 @@ python fis_adjuster.py clock --port COM3 --write
 - The D13's factory curve is `50 50 50 50 50 50 4E 4E 40 1F`. The app's "factory" row shows the D11 values, so use your own backup to return to stock.
 - The cluster counts EEPROM writes in byte 0x294.
 - **Odometer storage:** 8 little-endian words at 0x042, each the inverse of a 16 km counter. Stored = shown km + 52.
-- **Protocol:** KW1281 at 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`: `72`/`77` read/write 16 EEPROM bytes, `53 9D <password>` log in, `53 82` restart the display. `52`/`57` read/write CPU memory; the D11 clock is at RAM 0x0213.
+- **Protocol:** KW1281 at 0x17, mode login `1B 80 "loginas9"`, then 19200 8E1 packets `D1 <len> <cmd> <data> <xor>`: `72`/`77` read/write 16 EEPROM bytes, `53 9D <password>` log in, `53 82` restart the display. `52`/`57` read/write CPU memory; the clock is at RAM 0x0213 on the D11 and 0x0211 on the D13.
 - **Bench tip:** switching the cluster's 12 V with the cable plugged in can lock up some KKL cables until they are replugged.
 
 Use at your own risk. Keep your backup file.
@@ -137,6 +141,12 @@ Use at your own risk. Keep your backup file.
 MIT, see [LICENSE](LICENSE). You can use, change and share it, including in other tools, as long as you keep the copyright notice and credit RxD FIS Adjuster by RENOxDECEPTION.
 
 ## Changes
+
+**1.3 (2026-11-19)**
+- The graph shows the byte the display uses at the current temperature ("uses ~53"), from the car's outside sensor or a temperature you type. The command line `read` prints it too.
+- Temperature estimates now come from a freezer-run fit instead of a single in-car reading.
+- Clock works on the D13 too (its clock is at a different address), so contrast writes on a D13 no longer leave the dash at 12:00 1.01.1999.
+- Measured shape checked on a second cluster: the in-car D13 at 0 C. With the old flat curve the FIS was overdriven (washed-out background, ghost grid); with the measured shape it is clean.
 
 **1.2 (2026-11-14)**
 - A3 8L VDO clusters (8L0 920 9xx) accepted: **experimental and untested**, like the C5.

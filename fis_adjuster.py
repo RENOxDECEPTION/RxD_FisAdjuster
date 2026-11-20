@@ -11,7 +11,7 @@ CLI:  python fis_adjuster.py read --port COM3
       python fis_adjuster.py backlight --port COM3 fis 0x10 [--write]        (EXPERIMENTAL; fis or clock, positive = brighter)
       python fis_adjuster.py clock --port COM3 --write                       (set the cluster clock to this PC's time)
 
-x is the display temperature sensor (hotter = lower x, measured). The C figures the app shows are guesses.
+x is the display temperature sensor (hotter = lower x, measured). The C figures the app shows are estimates from a freezer-run fit.
 
 Needs: Python 3, pyserial (pip install pyserial), a dumb FTDI KKL K-line cable. Tkinter for the GUI.
 EEPROM 0x26A: 0A, 10 x breakpoints (0x26B-0x274), 10 contrast bytes (0x275-0x27E). Lower byte = darker pixels.
@@ -22,7 +22,7 @@ import serial
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
 XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
-VERSION = '1.2'
+VERSION = '1.3'
 # Measured shape, EXPERIMENTAL: freezer and heated-bed runs on ONE cluster (bench D11, 2026-11-14). Offsets from point 3
 # (x 0x79, about 15 C): the hot points get 0x20 more drive, the cold points 0x1C less. Hotter needed more drive all the way
 # from -8 to 36 C, and cold overdrive washed the display out, so the factory's extra cold-end drive is dropped.
@@ -46,9 +46,9 @@ CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips 
 BACKUP_DIR = 'backups'
 
 # x is the reading of the display's temperature sensor. Measured: hotter = lower x, colder = higher x.
-# The C figures are GUESSES, not a calibration: an NTC divider with B = 3500 K is assumed, pinned to one in-car
-# reading (x 0x79 with the cabin taken as 15 C). Expect +-5 C near room temperature and worse at the ends.
-GUESS_B, GUESS_X, GUESS_C = 3500.0, 0x79, 15.0
+# The C figures are ESTIMATES: an NTC divider fitted to a freezer warm-up run on the bench D11 (2026-11-14: start -18 C,
+# room 22 C, 36 min time constant). Within a few C from 0 to 40 C, rougher at the ends. (Before: B 3500 pinned to x 0x79 = 15 C.)
+GUESS_B, GUESS_X, GUESS_C = 3211.0, 106.9, 20.0
 
 
 def x_to_c(x):
@@ -62,7 +62,7 @@ def c_to_x(t):
 
 
 def active_for(t):
-    """Indices of the curve points the cluster interpolates between at display temperature t (C). A guess, see above."""
+    """Indices of the curve points the cluster interpolates between at display temperature t (C). An estimate, see above."""
     x = c_to_x(t)
     if x <= XAXIS[0]:
         return [0]
@@ -74,6 +74,16 @@ def active_for(t):
 
 assert abs(x_to_c(GUESS_X) - GUESS_C) < 1e-6 and abs(c_to_x(x_to_c(0xA5)) - 0xA5) < 1e-6 and active_for(20) == [1, 2] and active_for(-40) == [9]
 GUESS_ROW = ' '.join('%+3.0f' % x_to_c(x) for x in XAXIS)
+
+
+def byte_at(c, t):
+    """The contrast byte the cluster uses at display temperature t (C): linear between points, like the cluster. An estimate."""
+    x = min(max(c_to_x(t), XAXIS[0]), XAXIS[-1])
+    i = min(max(k for k in range(10) if XAXIS[k] <= x), 8)
+    return round(c[i] + (c[i + 1] - c[i]) * (x - XAXIS[i]) / (XAXIS[i + 1] - XAXIS[i]))
+
+
+assert byte_at([0x3C] * 10, 0) == 0x3C and byte_at(FACTORY, 80) == 0x50 and byte_at(FACTORY, -40) == 0x1F
 
 # Odometer: a ring of 8 little-endian words at 0x042. Each word is the inverse of a counter in 16 km units, and the
 # number of words one step ahead adds 2 km each. Stored value = shown km + ODO_OFS.
@@ -334,6 +344,7 @@ class Cluster:
             self.log('write not acknowledged, bytes unchanged, trying once more')
 
     CLOCK = 0x0213      # CPU RAM: year, month, day, hour, minute, second (binary; bit 7 of each is a flag). From the D11 firmware.
+    CLOCKS = (0x0213, 0x0211)   # D11, D13 (found 2026-11-19 in the car): read_clock uses whichever one ticks
 
     def read_clock(self):
         """(datetime, flag bits) of the cluster's running clock, or None if those bytes are not a clock on this firmware.
@@ -350,15 +361,18 @@ class Cluster:
         if getattr(self, 'clock_ok', None) is False:
             return None
         try:
-            a = rd()
-            if a and not getattr(self, 'clock_ok', None):       # prove once that it ticks before ever writing there
-                time.sleep(1.5)
-                b = rd()
-                self.clock_ok = bool(b) and 1 <= (b[0] - a[0]).total_seconds() <= 3
-                a = b
-            if not a:
+            if getattr(self, 'clock_ok', None) is None:          # prove once that it ticks before ever writing there
+                for self.CLOCK in self.CLOCKS:
+                    a = rd()
+                    if a:
+                        time.sleep(1.5)
+                        b = rd()
+                        if b and 1 <= (b[0] - a[0]).total_seconds() <= 3:
+                            self.clock_ok = True
+                            return b
                 self.clock_ok = False
-            return a if self.clock_ok else None
+                return None
+            return rd()
         except Exception:
             self.clock_ok = False
             return None
@@ -691,7 +705,12 @@ def gui():
         if a:                                                 # where the cluster is on the curve: exact (Find position) or a guess from the temperature
             x0, x1 = px(XAXIS[a[0]]) - 4, px(XAXIS[a[-1]]) + 4
             cv.create_rectangle(x0, py(0), x1, py(0x80), fill='#dfd', outline='green')
-            cv.create_text((x0 + x1) / 2, py(0x80) + 8, text='active now' if state['exact'] else 'active (guess)', fill='green')
+            cv.create_text((x0 + x1) / 2, py(0x80) + 8, text='active now' if state['exact'] else 'active (estimate)', fill='green')
+        c = new_curve()
+        if c and state.get('tc') is not None and not state['exact']:   # the byte the display uses at that temperature
+            xt, b = px(c_to_x(state['tc'])), byte_at(c, state['tc'])
+            cv.create_line(xt, py(0), xt, py(0x80), fill='green', dash=(3, 3))
+            cv.create_text(xt + 6, py(b) - 10, text='uses ~%02X' % b, anchor='w', fill='green')
         for i, xl in enumerate(x_lbl):
             xl.config(fg='green' if i in a else 'black', font=('TkDefaultFont', 9, 'bold' if i in a else 'normal'))
         cv.create_text(px(255) - 4, py(0) + 8, text='darker', anchor='e', fill='gray')
@@ -779,8 +798,8 @@ def gui():
         was = state['us']
         state['us'] = units.get().startswith('F')
         u = 'F' if state['us'] else 'C'
-        temp_lbl.config(text='  Display temperature, %s (guess):' % u)
-        c_name.config(text='about %s (guess)' % u)
+        temp_lbl.config(text='  Display temperature, %s (estimate):' % u)
+        c_name.config(text='about %s (estimate)' % u)
         for i, l in enumerate(c_lbl):
             l.config(text='%+.0f' % show(x_to_c(XAXIS[i])))
         odo_unit.config(text='miles' if state['us'] else 'km')
@@ -853,7 +872,8 @@ def gui():
             t = float(temp.get())
         except ValueError:
             return
-        state['active'], state['exact'] = active_for((t - 32) / 1.8 if state['us'] else t), False
+        state['tc'] = (t - 32) / 1.8 if state['us'] else t
+        state['active'], state['exact'] = active_for(state['tc']), False
         draw()
     temp.bind('<KeyRelease>', mark_temp)
 
@@ -951,7 +971,7 @@ def gui():
     srow.pack()
     ttk.Label(srow, text='Curve shape:').pack(side='left', padx=4)
     ttk.Radiobutton(srow, text='Factory calibration curve', variable=shape_var, value='factory', command=shape).pack(side='left')
-    ttk.Radiobutton(srow, text='Measured cluster results (1 cluster, experimental)', variable=shape_var, value='measured',
+    ttk.Radiobutton(srow, text='Measured cluster results (experimental)', variable=shape_var, value='measured',
                     command=shape).pack(side='left', padx=6)
 
     ttk.Button(top, text='Read', command=do_read).pack(side='left', padx=8)
@@ -973,7 +993,7 @@ def gui():
     draw()
     log('Read first. Darker/Lighter move the whole contrast curve by 8. Write makes a backup, writes, and verifies.')
     log('Backlight is experimental. The sliders move a table up or down from what is in the cluster; one Write applies contrast and backlight together.')
-    log('The C row and the green "active (guess)" band are estimates, not measurements. Find position gives the exact points (3-4 test writes).')
+    log('The C row and the green "active (estimate)" band and the "uses ~" byte are estimates. Find position gives the exact points (3-4 test writes).')
     def on_close():
         if not state['busy']:
             return root.destroy()
@@ -1017,11 +1037,11 @@ def main():
         cur, name, outside, km, bl = read_curve(a.port)
         print('cluster     :', name)
         print('x           :', hx(XAXIS), '  (display temperature sensor: left = hot, right = cold)')
-        print('about C     :', GUESS_ROW, '  (GUESS, not calibrated)')
+        print('about C     :', GUESS_ROW, '  (estimate, from a freezer-run fit)')
         if outside is not None:
             act = active_for(outside)
-            print('outside temp: %.0f C from the car. If the car has sat for hours, the active points are about x %s (guess)'
-                  % (outside, ' and '.join('%02X' % XAXIS[i] for i in act)))
+            print('outside temp: %.0f C from the car. If the car has sat for hours, the active points are about x %s and the display'
+                  ' uses about %02X (estimate)' % (outside, ' and '.join('%02X' % XAXIS[i] for i in act), byte_at(cur, outside)))
         print('curve now   :', hx(cur), '  (factory', hx(FACTORY) + ', lower = darker)')
         if km is not None:
             print('odometer    : %d km = %d mi  (stored value; the dash can read a mile or two different)' % (km, round(km / KM_PER_MI)))
