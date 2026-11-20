@@ -101,7 +101,7 @@ Two sliders: one for the FIS, one for the clock and odometer. The middle is what
 
 ### Clock
 
-The **Clock** tab sets the cluster's time and date from the PC. It is a memory write, not an EEPROM write. After a battery disconnect the cluster always starts at 12:00, 1.01.1999 (fixed in its firmware). Works on the D11 and the D13, which keep the clock at different addresses: the app uses whichever one ticks, and refuses if neither does. Every contrast write restarts the display, which resets the clock, so the app puts the time back afterwards.
+The **Clock** tab sets the cluster's time and date from the PC. It is a memory write, not an EEPROM write. After a battery disconnect the cluster always starts at 12:00, 1.01.1999 (fixed in its firmware). Works on the D11 and the D13, which keep the clock at different addresses. On any other cluster the app searches the cluster's memory (read-only) for a date that ticks with real time, writes there, and checks the new time took. If it finds nothing, it does nothing. If it finds a new address, the log says so: please report it in an issue. Every contrast write restarts the display, which resets the clock, so the app puts the time back afterwards.
 
 ### Odometer, for swapped clusters
 
@@ -141,6 +141,9 @@ Use at your own risk. Keep your backup file.
 MIT, see [LICENSE](LICENSE). You can use, change and share it, including in other tools, as long as you keep the copyright notice and credit RxD FIS Adjuster by RENOxDECEPTION.
 
 ## Changes
+
+**1.3.1 (2026-11-19)**
+- Clock on clusters we have not seen: the app searches memory for the running clock (read-only, a few seconds, only when the D11 and D13 addresses do not work) and checks every clock write took. Tested on the D13 with its address hidden: found in 6 s.
 
 **1.3 (2026-11-19)**
 - The graph shows the byte the display uses at the current temperature ("uses ~53"), from the car's outside sensor or a temperature you type. The command line `read` prints it too.

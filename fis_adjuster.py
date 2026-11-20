@@ -22,7 +22,7 @@ import serial
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
 XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
-VERSION = '1.3'
+VERSION = '1.3.1'
 # Measured shape, EXPERIMENTAL: freezer and heated-bed runs on ONE cluster (bench D11, 2026-11-14). Offsets from point 3
 # (x 0x79, about 15 C): the hot points get 0x20 more drive, the cold points 0x1C less. Hotter needed more drive all the way
 # from -8 to 36 C, and cold overdrive washed the display out, so the factory's extra cold-end drive is dropped.
@@ -346,18 +346,44 @@ class Cluster:
     CLOCK = 0x0213      # CPU RAM: year, month, day, hour, minute, second (binary; bit 7 of each is a flag). From the D11 firmware.
     CLOCKS = (0x0213, 0x0211)   # D11, D13 (found 2026-11-19 in the car): read_clock uses whichever one ticks
 
+    @staticmethod
+    def as_clock(b):
+        """(datetime, flag bits) from 6 RAM bytes, or None if they are not a valid date and time."""
+        v = [x & 0x7F for x in b]
+        try:
+            return (datetime.datetime((1900 if v[0] >= 97 else 2000) + v[0], *v[1:]), [x & 0x80 for x in b]) if v[0] <= 99 else None
+        except ValueError:
+            return None
+
+    def find_clock(self):
+        """Clusters we have not seen: search RAM 0x0100-0x04FF (read-only; skips the low I/O area) for 6 bytes that are a
+        valid date and advance with real time between two passes. Lowest match wins (on the D13 the copy above it is the
+        display's). Returns the address or None."""
+        def dump():
+            m = bytearray()
+            for a in range(0x100, 0x500, 16):
+                r = self.d1([0x52, 0x10, 0x00, a >> 8, a & 0xFF], tries=2)
+                if len(r) < 19 or r[2] != 0x52:
+                    return None
+                m += bytes(r[3:19])
+            return m
+        ta = time.time(); a = dump()
+        time.sleep(2)
+        tb = time.time(); b = dump()
+        if not a or not b:
+            return None
+        for i in range(len(a) - 5):
+            p, q = self.as_clock(a[i:i + 6]), self.as_clock(b[i:i + 6])
+            if p and q and 1 <= (q[0] - p[0]).total_seconds() and abs((q[0] - p[0]).total_seconds() - (tb - ta)) <= 1.5:
+                return 0x100 + i
+        return None
+
     def read_clock(self):
-        """(datetime, flag bits) of the cluster's running clock, or None if those bytes are not a clock on this firmware.
+        """(datetime, flag bits) of the cluster's running clock, or None if no clock was found on this firmware.
         Never raises: a cluster that does not answer is remembered as 'no clock' and not asked again."""
         def rd():
             r = self.d1([0x52, 0x06, 0x00, self.CLOCK >> 8, self.CLOCK & 0xFF], tries=2)
-            if len(r) != 10 or r[2] != 0x52:
-                return None
-            v = [x & 0x7F for x in r[3:9]]
-            try:
-                return (datetime.datetime((1900 if v[0] >= 97 else 2000) + v[0], *v[1:]), [x & 0x80 for x in r[3:9]]) if v[0] <= 99 else None
-            except ValueError:
-                return None
+            return self.as_clock(r[3:9]) if len(r) == 10 and r[2] == 0x52 else None
         if getattr(self, 'clock_ok', None) is False:
             return None
         try:
@@ -370,8 +396,12 @@ class Cluster:
                         if b and 1 <= (b[0] - a[0]).total_seconds() <= 3:
                             self.clock_ok = True
                             return b
-                self.clock_ok = False
-                return None
+                adr = self.find_clock()
+                self.clock_ok = adr is not None
+                if adr is None:
+                    return None
+                self.CLOCK = adr
+                self.log('clock found at RAM %04X (not a known address: please report it)' % adr)
             return rd()
         except Exception:
             self.clock_ok = False
@@ -380,10 +410,15 @@ class Cluster:
     def set_clock(self, t):
         c = self.read_clock()
         if not c:
-            raise Fail('this cluster version keeps its clock somewhere else: clock not set')
+            raise Fail('no running clock found on this cluster: clock not set')
         v = [t.year % 100, t.month, t.day, t.hour, t.minute, t.second]
         if self.d1([0x57, 0x06, 0x00, self.CLOCK >> 8, self.CLOCK & 0xFF] + [x | f for x, f in zip(v, c[1])], tries=1)[2] != 0x06:
             raise Fail('the cluster refused the clock write')
+        time.sleep(2)
+        now = self.read_clock()
+        if not now or abs((now[0] - t).total_seconds() - 2) > 4:          # it must keep the new time and keep ticking
+            self.clock_ok = False
+            raise Fail('the clock write did not take (RAM %04X): clock not set' % self.CLOCK)
 
     def restart(self):
         before, t0 = self.read_clock(), time.time()
