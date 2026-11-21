@@ -22,11 +22,11 @@ import serial
 FACTORY = [0x50, 0x50, 0x50, 0x50, 0x50, 0x50, 0x4D, 0x4D, 0x40, 0x1F]
 XAXIS = [0x21, 0x3E, 0x79, 0xA5, 0xB7, 0xBF, 0xC6, 0xCC, 0xD1, 0xD6]
 FLOOR = 0x10            # 0x10 already ghosts at room temperature
-VERSION = '1.3.1'
+VERSION = '1.3.2'
 # Measured shape, EXPERIMENTAL: freezer and heated-bed runs on ONE cluster (bench D11, 2026-11-14). Offsets from point 3
-# (x 0x79, about 15 C): the hot points get 0x20 more drive, the cold points 0x1C less. Hotter needed more drive all the way
+# (x 0x79, about 15 C): the hot points get 0x04 more drive (the D11 took 0x20, but that overdrove the car D13 when warm), the cold points 0x1C less. Hotter needed more drive all the way
 # from -8 to 36 C, and cold overdrive washed the display out, so the factory's extra cold-end drive is dropped.
-SHAPE = [-0x20, -0x20, 0, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C]
+SHAPE = [-0x04, -0x04, 0, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C]
 
 
 def shaped(c, measured=True):
@@ -39,7 +39,7 @@ def shape_of(c):
     return 'measured' if c == shaped(c) else 'factory' if c == shaped(c, False) else 'custom'
 
 
-assert shaped([0x30] * 10) == [0x10, 0x10, 0x30] + [0x4C] * 7 and shaped([0x3C] * 10) == [0x1C, 0x1C, 0x3C] + [0x58] * 7
+assert shaped([0x30] * 10) == [0x2C, 0x2C, 0x30] + [0x4C] * 7 and shaped([0x38] * 10) == [0x34, 0x34, 0x38] + [0x54] * 7
 assert shaped(shaped([0x3C] * 10), False) == [0x3C] * 6 + [0x39, 0x39, 0x2C, 0x10] and shape_of(FACTORY) == 'factory'
 assert shape_of(shaped(FACTORY)) == 'measured' and shape_of([0x20] * 10) == 'custom'
 CLUSTER_MANAGED = (0x294, 0x6E9)   # write counter and a byte the cluster flips by itself

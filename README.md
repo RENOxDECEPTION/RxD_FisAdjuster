@@ -79,7 +79,7 @@ Also in the window:
 
 ![factory vs measured curve](images/curve_vs_factory.png)
 
-The **Curve shape** switch picks **Factory calibration curve** (default) or **Measured cluster results**. It keeps your level at point 3 and only changes the shape: the hot points 0x20 darker, the cold points 0x1C lighter.
+The **Curve shape** switch picks **Factory calibration curve** (default) or **Measured cluster results**. It keeps your level at point 3 and only changes the shape: the hot points 0x04 darker, the cold points 0x1C lighter.
 
 How it was measured: the bench cluster came out of a freezer and was swept through every contrast byte, with a webcam photo at each one, as it warmed to room temperature. A heated-bed run continued the sweep up to about 36 C. The orange dots are the best byte at each temperature. It needed **more drive the hotter it got**, and when cold, extra drive washed the whole display out. The factory curve does the opposite. With a curve set on a cool day, expect fading on hot days.
 
@@ -91,7 +91,7 @@ From the freezer run: rows are display temperatures, columns are contrast bytes,
 
 Checked on a second cluster, the D13 in my car, at 0 C outside. Left: my old curve (`3C` through the middle). The FIS is overdriven: washed-out background and a ghost grid. Right: the measured shape at the same level, clean.
 
-**Measured on one cluster and checked on a second, both in the cold.** The hot end is not checked in a car yet. Set your level first, then try it, and check on a hot day and a cold morning.
+**Measured on one cluster and checked on a second.** The hot end varies by panel: the bench D11 wanted 0x20 more drive when warm, the car D13 only 0x04. The app uses 0x04; press Darker if it fades when hot. Set your level first, then try it, and check on a hot day and a cold morning.
 
 ### Backlight (experimental)
 
@@ -141,6 +141,9 @@ Use at your own risk. Keep your backup file.
 MIT, see [LICENSE](LICENSE). You can use, change and share it, including in other tools, as long as you keep the copyright notice and credit RxD FIS Adjuster by RENOxDECEPTION.
 
 ## Changes
+
+**1.3.2 (2026-11-20)**
+- Measured shape: hot points now 0x04 darker instead of 0x20. The old value overdrove the car D13 in a warm cabin.
 
 **1.3.1 (2026-11-19)**
 - Clock on clusters we have not seen: the app searches memory for the running clock (read-only, a few seconds, only when the D11 and D13 addresses do not work) and checks every clock write took. Tested on the D13 with its address hidden: found in 6 s.
